@@ -225,6 +225,7 @@ export function PdfEditor() {
   const handleFile = useCallback(async (file: File) => {
     setOriginalFile(file);
     setBg(null);
+    setOriginalBg(null);
     const lower = file.name.toLowerCase();
     if (lower.endsWith(".docx") || lower.endsWith(".doc")) {
       toast.info("Word: σύντομα διαθέσιμο. Δοκίμασε PDF ή φωτογραφία προς το παρόν.");
@@ -234,8 +235,14 @@ export function PdfEditor() {
     setPhase("preparing");
     try {
       const out = await renderToImage(file);
-      setBg(out);
-      setPhase("ready");
+      setOriginalBg(out);
+      const isPdf = lower.endsWith(".pdf") || file.type === "application/pdf";
+      if (isPdf) {
+        setBg(out);
+        setPhase("ready");
+      } else {
+        setPhase("cropping");
+      }
     } catch (e) {
       console.error(e);
       toast.error(e instanceof Error ? e.message : "Σφάλμα κατά τη φόρτωση.");
