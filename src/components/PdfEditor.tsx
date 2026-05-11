@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Checkbox } from "@/components/ui/checkbox";
 import { supabase } from "@/integrations/supabase/client";
-import { consumeQuota, saveDocument, getMyProfile } from "@/lib/quota.functions";
+import { consumeQuota, saveDocument } from "@/lib/quota.functions";
 import { unwrapServerFn } from "@/lib/server-fn-client";
 import { UpgradeModal } from "@/components/UpgradeModal";
 import { CropPreview } from "@/components/CropPreview";
@@ -96,15 +96,21 @@ export function PdfEditor() {
 
   const consume = useServerFn(consumeQuota);
   const save = useServerFn(saveDocument);
-  const fetchProfile = useServerFn(getMyProfile);
   const [chips, setChips] = useState<{ label: string; value: string }[]>([]);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      if (!data.session?.access_token) return;
-      return fetchProfile().then((p) => {
-        const profile = unwrapServerFn(p);
-        if (!profile) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        if (!sessionData.session?.user) return; // guest mode — skip silently
+        const userId = sessionData.session.user.id;
+        const { data: profile, error } = await supabase
+          .from("profiles")
+          .select("*")
+          .eq("id", userId)
+          .maybeSingle();
+        if (error || !profile || cancelled) return;
         const prof = profile as unknown as Record<string, string | null>;
         const fullAddress = [prof.address_street, prof.address_number].filter(Boolean).join(" ").trim();
         const fullCity = [prof.address_postal, prof.address_city].filter(Boolean).join(" ").trim();
@@ -123,10 +129,12 @@ export function PdfEditor() {
           { label: "Τόπος Γέννησης", value: prof.birth_place ?? "" },
         ].filter((c) => c.value.trim().length > 0);
         setChips(items);
-      });
-    })
-      .catch(() => { /* guest mode */ });
-  }, [fetchProfile]);
+      } catch {
+        /* guest mode — ignore */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // Init / reinit fabric when bg changes
   useEffect(() => {
