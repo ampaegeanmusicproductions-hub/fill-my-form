@@ -320,8 +320,11 @@ export function PdfEditor() {
             <div className="flex flex-col items-center gap-3 text-muted-foreground">
               <Loader2 className="h-10 w-10 animate-spin text-primary" />
               <div className="font-medium">
-                {phase === "preparing" ? "Επεξεργασία αρχείου…" : "Ανάλυση πεδίων με AI…"}
+                {phase === "preparing" ? "Επεξεργασία αρχείου…" : "Το AI εντοπίζει πεδία…"}
               </div>
+              {phase === "detecting" && (
+                <div className="text-xs text-muted-foreground">Μπορεί να πάρει 20–30 δευτερόλεπτα</div>
+              )}
             </div>
           ) : (
             <div className="flex flex-col items-center gap-3">
