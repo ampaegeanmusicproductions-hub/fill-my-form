@@ -27,6 +27,9 @@ export const detectFields = createServerFn({ method: "POST" })
     const apiKey = process.env.LOVABLE_API_KEY;
     if (!apiKey) throw new Error("LOVABLE_API_KEY δεν έχει ρυθμιστεί.");
 
+    console.log("[detectFields] received imageDataUrl, length:", data.imageDataUrl.length);
+    console.log("[detectFields] sending to Lovable AI Gateway...");
+
     const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
       headers: {
