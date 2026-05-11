@@ -17,7 +17,7 @@ export function Footer() {
           </ul>
         </div>
         <div className="text-muted-foreground">
-          © {new Date().getFullYear()} FormFill.gr · Φτιαγμένο στην Ελλάδα
+          © {new Date().getFullYear()} Autodilosi.gr · Φτιαγμένο στην Ελλάδα
         </div>
       </div>
     </footer>
