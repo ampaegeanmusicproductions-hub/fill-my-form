@@ -102,7 +102,7 @@ export function PdfEditor() {
     fetchProfile()
       .then((p) => {
         if (!p) return;
-        const prof = p as Record<string, string | null>;
+        const prof = p as unknown as Record<string, string | null>;
         const fullAddress = [prof.address_street, prof.address_number].filter(Boolean).join(" ").trim();
         const fullCity = [prof.address_postal, prof.address_city].filter(Boolean).join(" ").trim();
         const items: { label: string; value: string }[] = [
