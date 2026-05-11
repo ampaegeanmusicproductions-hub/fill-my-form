@@ -98,7 +98,8 @@ export function CropPreview({ dataUrl, onConfirm, onSkip }: Props) {
   const [activeIdx, setActiveIdx] = useState<number | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ idx: number; offX: number; offY: number; startX: number; startY: number } | null>(null);
-  const pixelsRef = useRef<{ data: Uint8ClampedArray; w: number; h: number } | null>(null);
+  const imageRef = useRef<HTMLImageElement | null>(null);
+  const pixelsRef = useRef<{ data: Uint8ClampedArray; w: number; h: number; ratio: number } | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -106,25 +107,13 @@ export function CropPreview({ dataUrl, onConfirm, onSkip }: Props) {
       try {
         const image = await withTimeout(loadImage(dataUrl), "Η προεπισκόπηση περικοπής άργησε πολύ.");
         if (!alive) return;
-        const W = image.naturalWidth;
-        const H = image.naturalHeight;
-        try {
-          const cv = document.createElement("canvas");
-          cv.width = W; cv.height = H;
-          const ctx = cv.getContext("2d");
-          if (ctx) {
-            ctx.drawImage(image, 0, 0);
-            pixelsRef.current = { data: ctx.getImageData(0, 0, W, H).data, w: W, h: H };
-          }
-        } catch (err) {
-          console.warn("[CropPreview] cannot read pixels for snapping:", err);
-        }
-        setImgSize({ w: W, h: H });
+        imageRef.current = image;
+        setImgSize({ w: image.naturalWidth, h: image.naturalHeight });
         setCorners([
           { x: 0, y: 0 },
-          { x: W, y: 0 },
-          { x: W, y: H },
-          { x: 0, y: H },
+          { x: image.naturalWidth, y: 0 },
+          { x: image.naturalWidth, y: image.naturalHeight },
+          { x: 0, y: image.naturalHeight },
         ]);
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Η περικοπή δεν φόρτωσε εγκαίρως.");
@@ -135,6 +124,28 @@ export function CropPreview({ dataUrl, onConfirm, onSkip }: Props) {
     })();
     return () => { alive = false; };
   }, [dataUrl, onSkip]);
+
+  // Lazy + downsampled pixel buffer for snapping (mobile-safe).
+  const ensurePixels = () => {
+    if (pixelsRef.current || !imageRef.current) return pixelsRef.current;
+    try {
+      const img = imageRef.current;
+      const MAX = 1024;
+      const ratio = Math.min(1, MAX / Math.max(img.naturalWidth, img.naturalHeight));
+      const w = Math.max(1, Math.round(img.naturalWidth * ratio));
+      const h = Math.max(1, Math.round(img.naturalHeight * ratio));
+      const cv = document.createElement("canvas");
+      cv.width = w; cv.height = h;
+      const ctx = cv.getContext("2d");
+      if (!ctx) return null;
+      ctx.drawImage(img, 0, 0, w, h);
+      pixelsRef.current = { data: ctx.getImageData(0, 0, w, h).data, w, h, ratio };
+      return pixelsRef.current;
+    } catch (err) {
+      console.warn("[CropPreview] snap unavailable:", err);
+      return null;
+    }
+  };
 
   useEffect(() => {
     if (!imgSize) return;
@@ -178,9 +189,12 @@ export function CropPreview({ dataUrl, onConfirm, onSkip }: Props) {
     x = Math.max(0, Math.min(imgSize.w, x));
     y = Math.max(0, Math.min(imgSize.h, y));
     let didSnap = false;
-    if (snapEnabled && pixelsRef.current) {
-      const p = snapToEdge(pixelsRef.current.data, pixelsRef.current.w, pixelsRef.current.h, x, y);
-      if (p) { x = p.x; y = p.y; didSnap = true; }
+    if (snapEnabled) {
+      const px = ensurePixels();
+      if (px) {
+        const p = snapToEdge(px.data, px.w, px.h, x * px.ratio, y * px.ratio);
+        if (p) { x = p.x / px.ratio; y = p.y / px.ratio; didSnap = true; }
+      }
     }
     const next = [...corners] as [Pt, Pt, Pt, Pt];
     next[d.idx] = { x, y };
