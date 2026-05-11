@@ -166,8 +166,10 @@ export function PdfEditor() {
         }
       } catch (e) {
         console.error(e);
-        toast.error(e instanceof Error ? e.message : "Σφάλμα κατά την επεξεργασία.");
-        setPhase("idle");
+        toast.error(e instanceof Error ? e.message : "Σφάλμα κατά την ανίχνευση. Πρόσθεσε πεδία χειροκίνητα.");
+        // Keep image visible so user can add fields manually
+        setFields([]);
+        setPhase("ready");
       }
     },
     [detect],
