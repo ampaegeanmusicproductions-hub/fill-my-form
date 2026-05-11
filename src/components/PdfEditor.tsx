@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Checkbox } from "@/components/ui/checkbox";
 import { supabase } from "@/integrations/supabase/client";
-import { consumeQuota, saveDocument } from "@/lib/quota.functions";
+import { consumeQuota, saveDocument, getMyProfile } from "@/lib/quota.functions";
 import { UpgradeModal } from "@/components/UpgradeModal";
 import { CropPreview } from "@/components/CropPreview";
 
@@ -95,6 +95,34 @@ export function PdfEditor() {
 
   const consume = useServerFn(consumeQuota);
   const save = useServerFn(saveDocument);
+  const fetchProfile = useServerFn(getMyProfile);
+  const [chips, setChips] = useState<{ label: string; value: string }[]>([]);
+
+  useEffect(() => {
+    fetchProfile()
+      .then((p) => {
+        if (!p) return;
+        const prof = p as unknown as Record<string, string | null>;
+        const fullAddress = [prof.address_street, prof.address_number].filter(Boolean).join(" ").trim();
+        const fullCity = [prof.address_postal, prof.address_city].filter(Boolean).join(" ").trim();
+        const items: { label: string; value: string }[] = [
+          { label: "Ονοματεπώνυμο", value: prof.full_name ?? "" },
+          { label: "Πατρός", value: prof.father_name ?? "" },
+          { label: "Μητρός", value: prof.mother_name ?? "" },
+          { label: "ΑΦΜ", value: prof.afm ?? "" },
+          { label: "ΑΜΚΑ", value: prof.amka ?? "" },
+          { label: "Ταυτότητα", value: prof.id_number ?? "" },
+          { label: "Τηλέφωνο", value: prof.phone ?? "" },
+          { label: "Διεύθυνση", value: fullAddress },
+          { label: "Πόλη", value: fullCity },
+          { label: "Νομός", value: prof.address_region ?? "" },
+          { label: "Ημ. Γέννησης", value: prof.birth_date ?? "" },
+          { label: "Τόπος Γέννησης", value: prof.birth_place ?? "" },
+        ].filter((c) => c.value.trim().length > 0);
+        setChips(items);
+      })
+      .catch(() => { /* not signed in or other; chips just stay empty */ });
+  }, [fetchProfile]);
 
   // Init / reinit fabric when bg changes
   useEffect(() => {
@@ -255,10 +283,10 @@ export function PdfEditor() {
     if (f) void handleFile(f);
   };
 
-  const addTextAtCenter = () => {
+  const addTextWith = (initial: string, autoEdit = true) => {
     const c = fabricRef.current;
     if (!c) return;
-    const t = new fabric.IText("Γράψε εδώ", {
+    const t = new fabric.IText(initial, {
       left: c.getWidth() / 2 - 60,
       top: c.getHeight() / 2 - 12,
       fontSize,
@@ -270,9 +298,38 @@ export function PdfEditor() {
     });
     c.add(t);
     c.setActiveObject(t);
-    t.enterEditing();
-    t.selectAll();
+    if (autoEdit) {
+      t.enterEditing();
+      t.selectAll();
+    }
     c.requestRenderAll();
+  };
+
+  const addTextAtCenter = () => addTextWith("Γράψε εδώ", true);
+
+  const insertChip = (value: string) => {
+    const c = fabricRef.current;
+    if (!c) return;
+    const a = c.getActiveObject();
+    if (a && a.type === "i-text") {
+      const t = a as fabric.IText;
+      if (t.isEditing) {
+        // Insert at caret
+        const text = t.text ?? "";
+        const start = t.selectionStart ?? text.length;
+        const end = t.selectionEnd ?? start;
+        const next = text.slice(0, start) + value + text.slice(end);
+        t.set("text", next);
+        t.selectionStart = start + value.length;
+        t.selectionEnd = start + value.length;
+      } else {
+        t.set("text", value);
+      }
+      c.requestRenderAll();
+      c.fire("object:modified", { target: t });
+      return;
+    }
+    addTextWith(value, false);
   };
 
   const updateActive = (patch: Partial<{ fontSize: number; fill: string }>) => {
@@ -300,94 +357,108 @@ export function PdfEditor() {
   const exportPdf = async () => {
     if (!bg || !originalFile || !fabricRef.current) return;
     setPhase("exporting");
+    let step = "init";
     try {
+      step = "Έλεγχος ορίου χρήσης";
+      console.log("[exportPdf]", step);
       try {
         await consume();
       } catch (e) {
-        if (e instanceof Error && e.message.includes("QUOTA_EXCEEDED")) {
+        const msg = e instanceof Error ? e.message : (e instanceof Response ? `HTTP ${e.status}` : String(e));
+        if (msg.includes("QUOTA_EXCEEDED")) {
           setUpgradeOpen(true);
           setPhase("ready");
           return;
         }
-        throw e;
+        if (e instanceof Response && (e.status === 401 || e.status === 403)) {
+          throw new Error("Πρέπει να συνδεθείς για να εξάγεις το PDF.");
+        }
+        throw new Error(msg);
       }
 
-      // Composite background + fabric canvas → image
       const c = fabricRef.current;
       c.discardActiveObject();
 
-      // Optionally hide text backgrounds for export
+      step = "Προετοιμασία overlay κειμένου";
+      console.log("[exportPdf]", step);
       const textObjs = c.getObjects().filter((o) => o.type === "i-text") as fabric.IText[];
       const savedBgs = textObjs.map((o) => o.backgroundColor);
       if (removeTextBg) {
         textObjs.forEach((o) => o.set({ backgroundColor: "" }));
       }
       c.requestRenderAll();
-
       const overlay = c.toDataURL({ format: "png", multiplier: 1 });
-
-      // Restore backgrounds
       if (removeTextBg) {
         textObjs.forEach((o, i) => o.set({ backgroundColor: savedBgs[i] }));
         c.requestRenderAll();
       }
 
+      step = "Φόρτωση εικόνας υποβάθρου";
+      console.log("[exportPdf]", step);
+      const baseImg = await loadImage(bg.dataUrl);
+
+      step = "Σύνθεση εικόνας + κειμένου";
+      console.log("[exportPdf]", step, { w: bg.w, h: bg.h, textObjects: textObjs.length });
       const out = document.createElement("canvas");
       out.width = bg.w;
       out.height = bg.h;
-      const octx = out.getContext("2d")!;
+      const octx = out.getContext("2d");
+      if (!octx) throw new Error("Αδυναμία επεξεργασίας εικόνας (canvas 2D context).");
       octx.fillStyle = "#ffffff";
       octx.fillRect(0, 0, bg.w, bg.h);
-      const baseImg = await loadImage(bg.dataUrl);
       octx.drawImage(baseImg, 0, 0, bg.w, bg.h);
       const overlayImg = await loadImage(overlay);
       octx.drawImage(overlayImg, 0, 0, bg.w, bg.h);
       const finalDataUrl = out.toDataURL("image/jpeg", 0.95);
+
+      step = "Μετατροπή εικόνας σε bytes";
+      console.log("[exportPdf]", step);
       const finalBytes = await (await fetch(finalDataUrl)).arrayBuffer();
 
-      // A4 page in points (72pt = 1in). 595 x 842 pt = A4 portrait.
-      // Choose orientation matching content for less letterboxing.
+      step = "Δημιουργία PDF (A4)";
+      console.log("[exportPdf]", step);
       const A4 = { w: 595, h: 842 };
       const landscape = bg.w > bg.h;
       const pageW = landscape ? A4.h : A4.w;
       const pageH = landscape ? A4.w : A4.h;
-      const margin = 18; // ~6mm
-      const availW = pageW - margin * 2;
-      const availH = pageH - margin * 2;
-      const fit = Math.min(availW / bg.w, availH / bg.h);
+      const margin = 18;
+      const fit = Math.min((pageW - margin * 2) / bg.w, (pageH - margin * 2) / bg.h);
       const drawW = bg.w * fit;
       const drawH = bg.h * fit;
-      const x = (pageW - drawW) / 2;
-      const y = (pageH - drawH) / 2;
+      const px = (pageW - drawW) / 2;
+      const py = (pageH - drawH) / 2;
 
       const pdfDoc = await PDFDocument.create();
       const jpg = await pdfDoc.embedJpg(finalBytes);
       const page = pdfDoc.addPage([pageW, pageH]);
       page.drawRectangle({ x: 0, y: 0, width: pageW, height: pageH, color: rgb(1, 1, 1) });
-      page.drawImage(jpg, { x, y, width: drawW, height: drawH });
+      page.drawImage(jpg, { x: px, y: py, width: drawW, height: drawH });
+
+      step = "Αποθήκευση PDF";
+      console.log("[exportPdf]", step);
       const pdfBytes = await pdfDoc.save();
       const pdfBlob = new Blob([new Uint8Array(pdfBytes)], { type: "application/pdf" });
 
-      // Upload + record
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        const ts = Date.now();
-        const safeFull = sanitize(originalFile.name);
-        const baseName = sanitize(originalFile.name.replace(/\.[^.]+$/, ""));
-        const folder = `${user.id}/${ts}_${baseName}`;
-        const originalPath = `${folder}/original_${safeFull}`;
-        const filledPath = `${folder}/filled.pdf`;
-        const normalizedPath = `${folder}/normalized.pdf`;
+      step = "Ανέβασμα στο cloud";
+      console.log("[exportPdf]", step);
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          const ts = Date.now();
+          const safeFull = sanitize(originalFile.name);
+          const baseName = sanitize(originalFile.name.replace(/\.[^.]+$/, ""));
+          const folder = `${user.id}/${ts}_${baseName}`;
+          const originalPath = `${folder}/original_${safeFull}`;
+          const filledPath = `${folder}/filled.pdf`;
+          const normalizedPath = `${folder}/normalized.pdf`;
 
-        // normalized = background only as PDF
-        const normDoc = await PDFDocument.create();
-        const normBytes = await (await fetch(bg.dataUrl)).arrayBuffer();
-        const normJpg = await normDoc.embedJpg(normBytes);
-        const np = normDoc.addPage([bg.w, bg.h]);
-        np.drawImage(normJpg, { x: 0, y: 0, width: bg.w, height: bg.h });
-        const normalizedBlob = new Blob([new Uint8Array(await normDoc.save())], { type: "application/pdf" });
+          const normDoc = await PDFDocument.create();
+          const normBytes = await (await fetch(bg.dataUrl)).arrayBuffer();
+          const normJpg = await normDoc.embedJpg(normBytes);
+          const np = normDoc.addPage([bg.w, bg.h]);
+          np.drawImage(normJpg, { x: 0, y: 0, width: bg.w, height: bg.h });
+          const normalizedBlob = new Blob([new Uint8Array(await normDoc.save())], { type: "application/pdf" });
 
-        try {
           await Promise.all([
             supabase.storage.from("originals").upload(originalPath, originalFile, { upsert: true }),
             supabase.storage.from("normalized").upload(normalizedPath, normalizedBlob, { upsert: true }),
@@ -399,14 +470,16 @@ export function PdfEditor() {
               originalFilePath: originalPath,
               normalizedPdfPath: normalizedPath,
               filledFilePath: filledPath,
-              fields: c.toJSON().objects ?? [],
+              fields: (c.toJSON().objects ?? []) as unknown[],
             },
           });
-        } catch (e) {
-          console.warn("Upload/save failed (non-blocking):", e);
         }
+      } catch (e) {
+        console.warn("[exportPdf] upload/save failed (non-blocking):", e);
       }
 
+      step = "Λήψη αρχείου";
+      console.log("[exportPdf]", step);
       const url = URL.createObjectURL(pdfBlob);
       const a = document.createElement("a");
       a.href = url;
@@ -415,8 +488,12 @@ export function PdfEditor() {
       URL.revokeObjectURL(url);
       toast.success("Έτοιμο! Το αρχείο κατέβηκε.");
     } catch (e) {
-      console.error(e);
-      toast.error(e instanceof Error ? e.message : "Σφάλμα κατά την εξαγωγή.");
+      console.error(`[exportPdf] FAILED at step: ${step}`, e);
+      const reason =
+        e instanceof Error ? e.message :
+        e instanceof Response ? `HTTP ${e.status}` :
+        typeof e === "string" ? e : "άγνωστο σφάλμα";
+      toast.error(`Σφάλμα στο βήμα “${step}”: ${reason}`);
     } finally {
       setPhase("ready");
     }
@@ -478,6 +555,22 @@ export function PdfEditor() {
         <Button size="sm" onClick={addTextAtCenter}>
           <Type className="h-4 w-4 mr-1" /> Προσθήκη κειμένου
         </Button>
+        {chips.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1 max-w-full">
+            <span className="text-xs text-muted-foreground pl-1">Γρήγορη συμπλήρωση:</span>
+            {chips.map((ch) => (
+              <button
+                key={ch.label}
+                type="button"
+                onClick={() => insertChip(ch.value)}
+                title={ch.value}
+                className="inline-flex items-center rounded-full border bg-secondary/60 hover:bg-secondary text-secondary-foreground px-2 py-0.5 text-xs transition-colors"
+              >
+                {ch.label}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="flex items-center gap-2 px-2">
           <span className="text-xs text-muted-foreground w-10">{fontSize}px</span>
           <Slider
