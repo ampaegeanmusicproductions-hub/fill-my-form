@@ -85,10 +85,12 @@ export function PdfEditor() {
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [bg, setBg] = useState<{ dataUrl: string; w: number; h: number } | null>(null);
+  const [originalBg, setOriginalBg] = useState<{ dataUrl: string; w: number; h: number } | null>(null);
   const [originalFile, setOriginalFile] = useState<File | null>(null);
   const [scale, setScale] = useState(1);
   const [fontSize, setFontSize] = useState(20);
-  const [color, setColor] = useState("#0a1f44");
+  const [color, setColor] = useState("#000000");
+  const [removeTextBg, setRemoveTextBg] = useState(false);
   const [upgradeOpen, setUpgradeOpen] = useState(false);
 
   const consume = useServerFn(consumeQuota);
