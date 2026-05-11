@@ -95,6 +95,34 @@ export function PdfEditor() {
 
   const consume = useServerFn(consumeQuota);
   const save = useServerFn(saveDocument);
+  const fetchProfile = useServerFn(getMyProfile);
+  const [chips, setChips] = useState<{ label: string; value: string }[]>([]);
+
+  useEffect(() => {
+    fetchProfile()
+      .then((p) => {
+        if (!p) return;
+        const prof = p as Record<string, string | null>;
+        const fullAddress = [prof.address_street, prof.address_number].filter(Boolean).join(" ").trim();
+        const fullCity = [prof.address_postal, prof.address_city].filter(Boolean).join(" ").trim();
+        const items: { label: string; value: string }[] = [
+          { label: "Ονοματεπώνυμο", value: prof.full_name ?? "" },
+          { label: "Πατρός", value: prof.father_name ?? "" },
+          { label: "Μητρός", value: prof.mother_name ?? "" },
+          { label: "ΑΦΜ", value: prof.afm ?? "" },
+          { label: "ΑΜΚΑ", value: prof.amka ?? "" },
+          { label: "Ταυτότητα", value: prof.id_number ?? "" },
+          { label: "Τηλέφωνο", value: prof.phone ?? "" },
+          { label: "Διεύθυνση", value: fullAddress },
+          { label: "Πόλη", value: fullCity },
+          { label: "Νομός", value: prof.address_region ?? "" },
+          { label: "Ημ. Γέννησης", value: prof.birth_date ?? "" },
+          { label: "Τόπος Γέννησης", value: prof.birth_place ?? "" },
+        ].filter((c) => c.value.trim().length > 0);
+        setChips(items);
+      })
+      .catch(() => { /* not signed in or other; chips just stay empty */ });
+  }, [fetchProfile]);
 
   // Init / reinit fabric when bg changes
   useEffect(() => {
