@@ -113,6 +113,7 @@ export function PdfEditor() {
   const [originalFile, setOriginalFile] = useState<File | null>(null);
   const [renderedScale, setRenderedScale] = useState(1);
   const [upgradeOpen, setUpgradeOpen] = useState(false);
+  const [manualMode, setManualMode] = useState(false);
 
   const detect = useServerFn(detectFields);
   const consume = useServerFn(consumeQuota);
