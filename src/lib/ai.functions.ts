@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 
 const DetectFieldsSchema = z.object({
-  // Data URL: "data:image/png;base64,...."
+  // Data URL: "data:image/jpeg;base64,...."
   imageDataUrl: z.string().min(50).max(15_000_000),
 });
 
@@ -14,12 +14,73 @@ export type DetectedField = {
   height: number;
 };
 
-const SYSTEM_PROMPT = `Είσαι ειδικός στην ανάλυση ελληνικών επίσημων εγγράφων (υπεύθυνες δηλώσεις, αιτήσεις δημοσίου, σχολικές αιτήσεις, εφορία).
-Σου δίνεται η εικόνα ενός εγγράφου και πρέπει να εντοπίσεις ΚΑΘΕ κενό πεδίο όπου ο χρήστης αναμένεται να γράψει πληροφορία:
-- Παρακείμενες κενές γραμμές μετά από ετικέτες όπως "Όνομα:", "ΟΔΟΣ:", "Α.Φ.Μ.:", "ΑΔΤ:", κ.λπ.
-- Κενά πλαίσια / διακεκομμένες γραμμές
-- Κενοί χώροι σε φόρμες
-Επέστρεψε ΜΟΝΟ τα ευρήματα μέσω της συνάρτησης return_fields. Συντεταγμένες σε pixels της εικόνας που σου δόθηκε. Origin: πάνω αριστερά. Μην επιστρέφεις πεδία ήδη συμπληρωμένα.`;
+const SYSTEM_PROMPT = `Εντοπίζεις κενά πεδία σε ελληνικά έγγραφα (υπεύθυνες δηλώσεις, αιτήσεις, φόρμες). Επέστρεψε ΜΟΝΟ μέσω της return_fields. Συντεταγμένες σε pixels (origin πάνω αριστερά). Αγνόησε ήδη συμπληρωμένα πεδία.`;
+
+async function callGateway(apiKey: string, imageDataUrl: string, signal: AbortSignal) {
+  return fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    method: "POST",
+    signal,
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "google/gemini-2.5-flash",
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Εντόπισε όλα τα κενά πεδία." },
+            { type: "image_url", image_url: { url: imageDataUrl } },
+          ],
+        },
+      ],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "return_fields",
+            description: "Επιστρέφει λίστα κενών πεδίων.",
+            parameters: {
+              type: "object",
+              properties: {
+                fields: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      label: { type: "string" },
+                      x: { type: "number" },
+                      y: { type: "number" },
+                      width: { type: "number" },
+                      height: { type: "number" },
+                    },
+                    required: ["label", "x", "y", "width", "height"],
+                    additionalProperties: false,
+                  },
+                },
+              },
+              required: ["fields"],
+              additionalProperties: false,
+            },
+          },
+        },
+      ],
+      tool_choice: { type: "function", function: { name: "return_fields" } },
+    }),
+  });
+}
+
+async function attempt(apiKey: string, imageDataUrl: string, timeoutMs: number) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await callGateway(apiKey, imageDataUrl, controller.signal);
+  } finally {
+    clearTimeout(t);
+  }
+}
 
 export const detectFields = createServerFn({ method: "POST" })
   .inputValidator((input) => DetectFieldsSchema.parse(input))
@@ -27,75 +88,36 @@ export const detectFields = createServerFn({ method: "POST" })
     const apiKey = process.env.LOVABLE_API_KEY;
     if (!apiKey) throw new Error("LOVABLE_API_KEY δεν έχει ρυθμιστεί.");
 
-    console.log("[detectFields] received imageDataUrl, length:", data.imageDataUrl.length);
-    console.log("[detectFields] sending to Lovable AI Gateway...");
+    console.log("[detectFields] dataUrl length:", data.imageDataUrl.length);
 
-    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "google/gemini-2.5-pro",
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: "Εντόπισε όλα τα κενά πεδία στο παρακάτω έγγραφο.",
-              },
-              { type: "image_url", image_url: { url: data.imageDataUrl } },
-            ],
-          },
-        ],
-        tools: [
-          {
-            type: "function",
-            function: {
-              name: "return_fields",
-              description: "Επιστρέφει λίστα κενών πεδίων με pixel coordinates.",
-              parameters: {
-                type: "object",
-                properties: {
-                  fields: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: {
-                        label: { type: "string", description: "Ελληνική ετικέτα του πεδίου" },
-                        x: { type: "number" },
-                        y: { type: "number" },
-                        width: { type: "number" },
-                        height: { type: "number" },
-                      },
-                      required: ["label", "x", "y", "width", "height"],
-                      additionalProperties: false,
-                    },
-                  },
-                },
-                required: ["fields"],
-                additionalProperties: false,
-              },
-            },
-          },
-        ],
-        tool_choice: { type: "function", function: { name: "return_fields" } },
-      }),
-    });
+    let response: Response | null = null;
+    let lastErr: unknown = null;
+    for (let i = 0; i < 2; i++) {
+      try {
+        console.log(`[detectFields] attempt ${i + 1}...`);
+        response = await attempt(apiKey, data.imageDataUrl, 25_000);
+        if (response.ok) break;
+        if (response.status === 429) {
+          throw new Error("Πάρα πολλά αιτήματα. Δοκίμασε ξανά σε λίγο.");
+        }
+        if (response.status === 402) {
+          throw new Error("Έληξαν τα διαθέσιμα AI credits.");
+        }
+        const text = await response.text().catch(() => "");
+        console.error(`[detectFields] gateway ${response.status}:`, text.slice(0, 300));
+        lastErr = new Error(`Gateway ${response.status}`);
+        response = null;
+      } catch (e) {
+        lastErr = e;
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error(`[detectFields] attempt ${i + 1} failed:`, msg);
+        if (msg.includes("Πάρα πολλά") || msg.includes("AI credits")) throw e;
+      }
+    }
 
-    if (!response.ok) {
-      if (response.status === 429) {
-        throw new Error("Πάρα πολλά αιτήματα. Δοκίμασε ξανά σε λίγο.");
-      }
-      if (response.status === 402) {
-        throw new Error("Έληξαν τα διαθέσιμα AI credits. Επικοινώνησε με τον διαχειριστή.");
-      }
-      const text = await response.text().catch(() => "");
-      console.error("AI gateway error:", response.status, text);
-      throw new Error("Σφάλμα κατά την ανάλυση του εγγράφου.");
+    if (!response) {
+      console.error("[detectFields] both attempts failed:", lastErr);
+      throw new Error("Η ανίχνευση πεδίων καθυστερεί. Δοκίμασε ξανά σε λίγο.");
     }
 
     const json = (await response.json()) as {
@@ -107,10 +129,8 @@ export const detectFields = createServerFn({ method: "POST" })
       }>;
     };
 
-    console.log("[detectFields] AI response received. Keys:", Object.keys(json));
     const message = json.choices?.[0]?.message;
     const argsStr = message?.tool_calls?.[0]?.function?.arguments;
-    console.log("[detectFields] tool_calls present:", !!argsStr, "content fallback:", !!message?.content);
 
     const tryParse = (s: string): DetectedField[] | null => {
       try {
@@ -123,24 +143,15 @@ export const detectFields = createServerFn({ method: "POST" })
 
     if (argsStr) {
       const f = tryParse(argsStr);
-      if (f) {
-        console.log("[detectFields] parsed fields from tool_call:", f.length);
-        return f;
-      }
-      console.error("[detectFields] failed to parse tool args:", argsStr.slice(0, 500));
+      if (f) return f;
     }
     if (message?.content) {
-      // Fallback: try to extract JSON from content
       const m = message.content.match(/\{[\s\S]*\}/);
       if (m) {
         const f = tryParse(m[0]);
-        if (f) {
-          console.log("[detectFields] parsed fields from content fallback:", f.length);
-          return f;
-        }
+        if (f) return f;
       }
-      console.error("[detectFields] content (no JSON parse):", message.content.slice(0, 500));
     }
-    console.error("[detectFields] Unexpected AI response shape:", JSON.stringify(json).slice(0, 800));
+    console.error("[detectFields] empty/unparseable response");
     return [];
   });

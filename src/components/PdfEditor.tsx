@@ -23,32 +23,42 @@ const ACCEPTED = [
   ".doc",
 ].join(",");
 
+function compressCanvas(canvas: HTMLCanvasElement): string {
+  // Iteratively reduce quality to target ~100KB (base64 inflated ~33%)
+  const targetBytes = 130_000; // base64 length ≈ ~100KB binary
+  for (const q of [0.75, 0.6, 0.5, 0.4]) {
+    const url = canvas.toDataURL("image/jpeg", q);
+    if (url.length <= targetBytes) return url;
+  }
+  return canvas.toDataURL("image/jpeg", 0.4);
+}
+
 async function fileToImageDataUrl(file: File): Promise<{ dataUrl: string; width: number; height: number }> {
   // HEIC/HEIF → JPEG
   let working: Blob = file;
   const lower = file.name.toLowerCase();
   if (lower.endsWith(".heic") || lower.endsWith(".heif")) {
     const heic2any = (await import("heic2any")).default;
-    working = (await heic2any({ blob: file, toType: "image/jpeg", quality: 0.92 })) as Blob;
+    working = (await heic2any({ blob: file, toType: "image/jpeg", quality: 0.85 })) as Blob;
   }
 
   if (file.type === "application/pdf" || lower.endsWith(".pdf")) {
     return await renderPdfFirstPage(file);
   }
 
-  // Image (or converted HEIC): draw to canvas
+  // Image (or converted HEIC): draw to canvas, max width 1500px
   const url = URL.createObjectURL(working);
   try {
     const img = await loadImage(url);
     const canvas = document.createElement("canvas");
-    // Cap to a sensible width to keep AI requests fast
-    const maxW = 1600;
+    const maxW = 1500;
     const scale = Math.min(1, maxW / img.naturalWidth);
     canvas.width = Math.round(img.naturalWidth * scale);
     canvas.height = Math.round(img.naturalHeight * scale);
     const ctx = canvas.getContext("2d")!;
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+    const dataUrl = compressCanvas(canvas);
+    console.log("[PdfEditor] image prepared:", canvas.width, "x", canvas.height, "size:", Math.round(dataUrl.length / 1024), "KB");
     return { dataUrl, width: canvas.width, height: canvas.height };
   } finally {
     URL.revokeObjectURL(url);
@@ -75,7 +85,7 @@ async function renderPdfFirstPage(
   const pdf = await pdfjs.getDocument({ data: buf }).promise;
   const page = await pdf.getPage(1);
   const baseViewport = page.getViewport({ scale: 1 });
-  const targetWidth = Math.min(1600, baseViewport.width * 2); // ~retina-ish but capped
+  const targetWidth = Math.min(1500, baseViewport.width * 1.5);
   const scale = targetWidth / baseViewport.width;
   const viewport = page.getViewport({ scale });
   const canvas = document.createElement("canvas");
@@ -83,8 +93,10 @@ async function renderPdfFirstPage(
   canvas.height = Math.round(viewport.height);
   const ctx = canvas.getContext("2d")!;
   await page.render({ canvasContext: ctx, viewport, canvas }).promise;
+  const dataUrl = compressCanvas(canvas);
+  console.log("[PdfEditor] pdf prepared:", canvas.width, "x", canvas.height, "size:", Math.round(dataUrl.length / 1024), "KB");
   return {
-    dataUrl: canvas.toDataURL("image/jpeg", 0.92),
+    dataUrl,
     width: canvas.width,
     height: canvas.height,
   };
@@ -101,6 +113,7 @@ export function PdfEditor() {
   const [originalFile, setOriginalFile] = useState<File | null>(null);
   const [renderedScale, setRenderedScale] = useState(1);
   const [upgradeOpen, setUpgradeOpen] = useState(false);
+  const [manualMode, setManualMode] = useState(false);
 
   const detect = useServerFn(detectFields);
   const consume = useServerFn(consumeQuota);
@@ -154,8 +167,10 @@ export function PdfEditor() {
         }
       } catch (e) {
         console.error(e);
-        toast.error(e instanceof Error ? e.message : "Σφάλμα κατά την επεξεργασία.");
-        setPhase("idle");
+        toast.error(e instanceof Error ? e.message : "Σφάλμα κατά την ανίχνευση. Πρόσθεσε πεδία χειροκίνητα.");
+        // Keep image visible so user can add fields manually
+        setFields([]);
+        setPhase("ready");
       }
     },
     [detect],
@@ -306,8 +321,11 @@ export function PdfEditor() {
             <div className="flex flex-col items-center gap-3 text-muted-foreground">
               <Loader2 className="h-10 w-10 animate-spin text-primary" />
               <div className="font-medium">
-                {phase === "preparing" ? "Επεξεργασία αρχείου…" : "Ανάλυση πεδίων με AI…"}
+                {phase === "preparing" ? "Επεξεργασία αρχείου…" : "Το AI εντοπίζει πεδία…"}
               </div>
+              {phase === "detecting" && (
+                <div className="text-xs text-muted-foreground">Μπορεί να πάρει 20–30 δευτερόλεπτα</div>
+              )}
             </div>
           ) : (
             <div className="flex flex-col items-center gap-3">
@@ -338,24 +356,51 @@ export function PdfEditor() {
           <Sparkles className="h-4 w-4 text-gold" />
           {fields.length} πεδία
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={() => { setImageDataUrl(null); setOriginalFile(null); setFields([]); setValues({}); setPhase("idle"); }}>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant={manualMode ? "default" : "outline"}
+            size="sm"
+            onClick={() => setManualMode((v) => !v)}
+          >
+            {manualMode ? "Τέλος χειροκίνητης προσθήκης" : "Πρόσθεσε πεδίο χειροκίνητα"}
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => { setImageDataUrl(null); setOriginalFile(null); setFields([]); setValues({}); setPhase("idle"); setManualMode(false); }}>
             Νέο αρχείο
           </Button>
-          <Button onClick={exportPdf} disabled={phase === "exporting"}>
+          <Button onClick={exportPdf} disabled={phase === "exporting"} size="sm">
             {phase === "exporting" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
             Εξαγωγή PDF
           </Button>
         </div>
       </div>
 
-      <div ref={containerRef} className="relative mx-auto bg-card rounded-xl shadow-sm border overflow-hidden" style={{ width: displayW, height: displayH }}>
+      {manualMode && (
+        <div className="text-xs text-muted-foreground mb-2 text-center">
+          Κάνε κλικ στο σημείο όπου θέλεις να προσθέσεις πεδίο.
+        </div>
+      )}
+
+      <div
+        ref={containerRef}
+        className={`relative mx-auto bg-card rounded-xl shadow-sm border overflow-hidden ${manualMode ? "cursor-crosshair" : ""}`}
+        style={{ width: displayW, height: displayH }}
+        onClick={(e) => {
+          if (!manualMode || !imgSize) return;
+          const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+          const x = (e.clientX - rect.left) / renderedScale;
+          const y = (e.clientY - rect.top) / renderedScale;
+          const w = Math.min(260, imgSize.w - x);
+          const h = 28;
+          setFields((prev) => [...prev, { label: `Πεδίο ${prev.length + 1}`, x, y: Math.max(0, y - h / 2), width: w, height: h }]);
+        }}
+      >
         <img src={imageDataUrl} alt="Έγγραφο" style={{ width: displayW, height: displayH, display: "block" }} />
         {fields.map((f, i) => (
           <input
             key={i}
             value={values[i] ?? ""}
             onChange={(e) => setValues((v) => ({ ...v, [i]: e.target.value }))}
+            onClick={(e) => e.stopPropagation()}
             placeholder={f.label}
             title={f.label}
             className="absolute z-10 bg-primary/5 hover:bg-primary/10 focus:bg-background border border-primary/40 focus:border-primary rounded-sm px-1 outline-none text-foreground"
