@@ -267,7 +267,7 @@ export function PdfEditor() {
       const url = URL.createObjectURL(pdfBlob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${baseName}-συμπληρωμένο.pdf`;
+      a.download = `${originalFile.name.replace(/\.[^.]+$/, "")}-συμπληρωμένο.pdf`;
       a.click();
       URL.revokeObjectURL(url);
 
