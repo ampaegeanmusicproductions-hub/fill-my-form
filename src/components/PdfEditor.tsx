@@ -2,15 +2,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import * as fabric from "fabric";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
-import { Loader2, Upload, FileText, Download, Type, Trash2, Undo2, Redo2 } from "lucide-react";
+import { Loader2, Upload, FileText, Download, Type, Trash2, Undo2, Redo2, Crop, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
+import { Checkbox } from "@/components/ui/checkbox";
 import { supabase } from "@/integrations/supabase/client";
 import { consumeQuota, saveDocument } from "@/lib/quota.functions";
 import { UpgradeModal } from "@/components/UpgradeModal";
+import { CropPreview } from "@/components/CropPreview";
 
-type Phase = "idle" | "preparing" | "ready" | "exporting";
+type Phase = "idle" | "preparing" | "cropping" | "ready" | "exporting";
 
 const ACCEPTED = ".pdf,.jpg,.jpeg,.png,.webp,.heic,.heif";
 const MAX_W = 1400;
@@ -83,10 +85,12 @@ export function PdfEditor() {
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [bg, setBg] = useState<{ dataUrl: string; w: number; h: number } | null>(null);
+  const [originalBg, setOriginalBg] = useState<{ dataUrl: string; w: number; h: number } | null>(null);
   const [originalFile, setOriginalFile] = useState<File | null>(null);
   const [scale, setScale] = useState(1);
   const [fontSize, setFontSize] = useState(20);
-  const [color, setColor] = useState("#0a1f44");
+  const [color, setColor] = useState("#000000");
+  const [removeTextBg, setRemoveTextBg] = useState(false);
   const [upgradeOpen, setUpgradeOpen] = useState(false);
 
   const consume = useServerFn(consumeQuota);
@@ -147,7 +151,8 @@ export function PdfEditor() {
     if (!bg) return;
     const update = () => {
       const w = wrapperRef.current?.clientWidth ?? bg.w;
-      setScale(Math.min(1, w / bg.w));
+      const maxH = Math.max(360, window.innerHeight - 240);
+      setScale(Math.min(1, w / bg.w, maxH / bg.h));
     };
     update();
     window.addEventListener("resize", update);
@@ -220,6 +225,7 @@ export function PdfEditor() {
   const handleFile = useCallback(async (file: File) => {
     setOriginalFile(file);
     setBg(null);
+    setOriginalBg(null);
     const lower = file.name.toLowerCase();
     if (lower.endsWith(".docx") || lower.endsWith(".doc")) {
       toast.info("Word: σύντομα διαθέσιμο. Δοκίμασε PDF ή φωτογραφία προς το παρόν.");
@@ -229,8 +235,14 @@ export function PdfEditor() {
     setPhase("preparing");
     try {
       const out = await renderToImage(file);
-      setBg(out);
-      setPhase("ready");
+      setOriginalBg(out);
+      const isPdf = lower.endsWith(".pdf") || file.type === "application/pdf";
+      if (isPdf) {
+        setBg(out);
+        setPhase("ready");
+      } else {
+        setPhase("cropping");
+      }
     } catch (e) {
       console.error(e);
       toast.error(e instanceof Error ? e.message : "Σφάλμα κατά τη φόρτωση.");
@@ -259,6 +271,8 @@ export function PdfEditor() {
       fill: color,
       fontFamily: "Manrope, Arial, sans-serif",
       editable: true,
+      backgroundColor: "rgba(255,255,255,0.95)",
+      padding: 4,
     });
     c.add(t);
     c.setActiveObject(t);
@@ -307,24 +321,56 @@ export function PdfEditor() {
       // Composite background + fabric canvas → image
       const c = fabricRef.current;
       c.discardActiveObject();
+
+      // Optionally hide text backgrounds for export
+      const textObjs = c.getObjects().filter((o) => o.type === "i-text") as fabric.IText[];
+      const savedBgs = textObjs.map((o) => o.backgroundColor);
+      if (removeTextBg) {
+        textObjs.forEach((o) => o.set({ backgroundColor: "" }));
+      }
       c.requestRenderAll();
+
       const overlay = c.toDataURL({ format: "png", multiplier: 1 });
+
+      // Restore backgrounds
+      if (removeTextBg) {
+        textObjs.forEach((o, i) => o.set({ backgroundColor: savedBgs[i] }));
+        c.requestRenderAll();
+      }
 
       const out = document.createElement("canvas");
       out.width = bg.w;
       out.height = bg.h;
       const octx = out.getContext("2d")!;
+      octx.fillStyle = "#ffffff";
+      octx.fillRect(0, 0, bg.w, bg.h);
       const baseImg = await loadImage(bg.dataUrl);
       octx.drawImage(baseImg, 0, 0, bg.w, bg.h);
       const overlayImg = await loadImage(overlay);
       octx.drawImage(overlayImg, 0, 0, bg.w, bg.h);
-      const finalDataUrl = out.toDataURL("image/jpeg", 0.92);
+      const finalDataUrl = out.toDataURL("image/jpeg", 0.95);
       const finalBytes = await (await fetch(finalDataUrl)).arrayBuffer();
+
+      // A4 page in points (72pt = 1in). 595 x 842 pt = A4 portrait.
+      // Choose orientation matching content for less letterboxing.
+      const A4 = { w: 595, h: 842 };
+      const landscape = bg.w > bg.h;
+      const pageW = landscape ? A4.h : A4.w;
+      const pageH = landscape ? A4.w : A4.h;
+      const margin = 18; // ~6mm
+      const availW = pageW - margin * 2;
+      const availH = pageH - margin * 2;
+      const fit = Math.min(availW / bg.w, availH / bg.h);
+      const drawW = bg.w * fit;
+      const drawH = bg.h * fit;
+      const x = (pageW - drawW) / 2;
+      const y = (pageH - drawH) / 2;
 
       const pdfDoc = await PDFDocument.create();
       const jpg = await pdfDoc.embedJpg(finalBytes);
-      const page = pdfDoc.addPage([bg.w, bg.h]);
-      page.drawImage(jpg, { x: 0, y: 0, width: bg.w, height: bg.h });
+      const page = pdfDoc.addPage([pageW, pageH]);
+      page.drawRectangle({ x: 0, y: 0, width: pageW, height: pageH, color: rgb(1, 1, 1) });
+      page.drawImage(jpg, { x, y, width: drawW, height: drawH });
       const pdfBytes = await pdfDoc.save();
       const pdfBlob = new Blob([new Uint8Array(pdfBytes)], { type: "application/pdf" });
 
@@ -381,6 +427,22 @@ export function PdfEditor() {
       setPhase("ready");
     }
   };
+
+  if (phase === "cropping" && originalBg) {
+    return (
+      <CropPreview
+        dataUrl={originalBg.dataUrl}
+        onConfirm={(out) => {
+          setBg(out);
+          setPhase("ready");
+        }}
+        onSkip={() => {
+          setBg(originalBg);
+          setPhase("ready");
+        }}
+      />
+    );
+  }
 
   if (!bg) {
     return (
@@ -455,6 +517,33 @@ export function PdfEditor() {
         <Button size="sm" variant="outline" onClick={deleteSelected}>
           <Trash2 className="h-4 w-4 mr-1" /> Διαγραφή
         </Button>
+        {originalBg && bg && originalBg.dataUrl !== bg.dataUrl && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setPhase("cropping")}
+            title="Επανέλεγξε τις γωνίες περικοπής"
+          >
+            <Crop className="h-4 w-4 mr-1" /> Περικοπή ξανά
+          </Button>
+        )}
+        {originalBg && bg && originalBg.dataUrl !== bg.dataUrl && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setBg(originalBg)}
+            title="Χρήση αρχικής εικόνας χωρίς περικοπή"
+          >
+            <RotateCcw className="h-4 w-4 mr-1" /> Επαναφορά εικόνας
+          </Button>
+        )}
+        <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer pl-2">
+          <Checkbox
+            checked={removeTextBg}
+            onCheckedChange={(v) => setRemoveTextBg(v === true)}
+          />
+          Χωρίς λευκό background στο PDF
+        </label>
         <div className="flex-1" />
         <div className="flex items-center gap-1 text-xs text-muted-foreground">
           <FileText className="h-3.5 w-3.5" />
@@ -465,6 +554,7 @@ export function PdfEditor() {
           variant="outline"
           onClick={() => {
             setBg(null);
+            setOriginalBg(null);
             setOriginalFile(null);
             setPhase("idle");
           }}
