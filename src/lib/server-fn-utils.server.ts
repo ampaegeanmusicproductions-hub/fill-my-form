@@ -6,9 +6,7 @@ export type ServerFnErrorDetails = {
   cause?: string;
 };
 
-export type ServerFnResult<T> =
-  | { ok: true; data: T }
-  | { ok: false; error: string; details: ServerFnErrorDetails };
+export type ServerFnFailure = { ok: false; error: string; details: ServerFnErrorDetails };
 
 export function logServerFnStep(fn: string, step: string, meta?: unknown) {
   if (typeof meta === "undefined") {
@@ -19,11 +17,11 @@ export function logServerFnStep(fn: string, step: string, meta?: unknown) {
   console.log(`[serverFn:${fn}] ${step}`, meta);
 }
 
-export function buildServerFnError<T>(
+export function buildServerFnError(
   fn: string,
   error: unknown,
   options?: { step?: string; defaultMessage?: string; defaultCode?: string },
-): ServerFnResult<T> {
+): ServerFnFailure {
   const step = options?.step;
   const fallbackMessage = options?.defaultMessage ?? "Η ενέργεια δεν ολοκληρώθηκε.";
   const fallbackCode = options?.defaultCode ?? "SERVER_FN_ERROR";
