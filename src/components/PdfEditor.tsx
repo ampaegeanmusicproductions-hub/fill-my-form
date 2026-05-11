@@ -321,24 +321,56 @@ export function PdfEditor() {
       // Composite background + fabric canvas → image
       const c = fabricRef.current;
       c.discardActiveObject();
+
+      // Optionally hide text backgrounds for export
+      const textObjs = c.getObjects().filter((o) => o.type === "i-text") as fabric.IText[];
+      const savedBgs = textObjs.map((o) => o.backgroundColor);
+      if (removeTextBg) {
+        textObjs.forEach((o) => o.set({ backgroundColor: "" }));
+      }
       c.requestRenderAll();
+
       const overlay = c.toDataURL({ format: "png", multiplier: 1 });
+
+      // Restore backgrounds
+      if (removeTextBg) {
+        textObjs.forEach((o, i) => o.set({ backgroundColor: savedBgs[i] }));
+        c.requestRenderAll();
+      }
 
       const out = document.createElement("canvas");
       out.width = bg.w;
       out.height = bg.h;
       const octx = out.getContext("2d")!;
+      octx.fillStyle = "#ffffff";
+      octx.fillRect(0, 0, bg.w, bg.h);
       const baseImg = await loadImage(bg.dataUrl);
       octx.drawImage(baseImg, 0, 0, bg.w, bg.h);
       const overlayImg = await loadImage(overlay);
       octx.drawImage(overlayImg, 0, 0, bg.w, bg.h);
-      const finalDataUrl = out.toDataURL("image/jpeg", 0.92);
+      const finalDataUrl = out.toDataURL("image/jpeg", 0.95);
       const finalBytes = await (await fetch(finalDataUrl)).arrayBuffer();
+
+      // A4 page in points (72pt = 1in). 595 x 842 pt = A4 portrait.
+      // Choose orientation matching content for less letterboxing.
+      const A4 = { w: 595, h: 842 };
+      const landscape = bg.w > bg.h;
+      const pageW = landscape ? A4.h : A4.w;
+      const pageH = landscape ? A4.w : A4.h;
+      const margin = 18; // ~6mm
+      const availW = pageW - margin * 2;
+      const availH = pageH - margin * 2;
+      const fit = Math.min(availW / bg.w, availH / bg.h);
+      const drawW = bg.w * fit;
+      const drawH = bg.h * fit;
+      const x = (pageW - drawW) / 2;
+      const y = (pageH - drawH) / 2;
 
       const pdfDoc = await PDFDocument.create();
       const jpg = await pdfDoc.embedJpg(finalBytes);
-      const page = pdfDoc.addPage([bg.w, bg.h]);
-      page.drawImage(jpg, { x: 0, y: 0, width: bg.w, height: bg.h });
+      const page = pdfDoc.addPage([pageW, pageH]);
+      page.drawRectangle({ x: 0, y: 0, width: pageW, height: pageH, color: rgb(1, 1, 1) });
+      page.drawImage(jpg, { x, y, width: drawW, height: drawH });
       const pdfBytes = await pdfDoc.save();
       const pdfBlob = new Blob([new Uint8Array(pdfBytes)], { type: "application/pdf" });
 
