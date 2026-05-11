@@ -283,10 +283,10 @@ export function PdfEditor() {
     if (f) void handleFile(f);
   };
 
-  const addTextAtCenter = () => {
+  const addTextWith = (initial: string, autoEdit = true) => {
     const c = fabricRef.current;
     if (!c) return;
-    const t = new fabric.IText("Γράψε εδώ", {
+    const t = new fabric.IText(initial, {
       left: c.getWidth() / 2 - 60,
       top: c.getHeight() / 2 - 12,
       fontSize,
@@ -298,9 +298,38 @@ export function PdfEditor() {
     });
     c.add(t);
     c.setActiveObject(t);
-    t.enterEditing();
-    t.selectAll();
+    if (autoEdit) {
+      t.enterEditing();
+      t.selectAll();
+    }
     c.requestRenderAll();
+  };
+
+  const addTextAtCenter = () => addTextWith("Γράψε εδώ", true);
+
+  const insertChip = (value: string) => {
+    const c = fabricRef.current;
+    if (!c) return;
+    const a = c.getActiveObject();
+    if (a && a.type === "i-text") {
+      const t = a as fabric.IText;
+      if (t.isEditing) {
+        // Insert at caret
+        const text = t.text ?? "";
+        const start = t.selectionStart ?? text.length;
+        const end = t.selectionEnd ?? start;
+        const next = text.slice(0, start) + value + text.slice(end);
+        t.set("text", next);
+        t.selectionStart = start + value.length;
+        t.selectionEnd = start + value.length;
+      } else {
+        t.set("text", value);
+      }
+      c.requestRenderAll();
+      c.fire("object:modified", { target: t });
+      return;
+    }
+    addTextWith(value, false);
   };
 
   const updateActive = (patch: Partial<{ fontSize: number; fill: string }>) => {
