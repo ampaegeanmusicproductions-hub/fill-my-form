@@ -100,11 +100,8 @@ export function PdfEditor() {
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    const loadProfileFor = async (userId: string) => {
       try {
-        const { data: sessionData } = await supabase.auth.getSession();
-        if (!sessionData.session?.user) return; // guest mode — skip silently
-        const userId = sessionData.session.user.id;
         const { data: profile, error } = await supabase
           .from("profiles")
           .select("*")
@@ -130,10 +127,22 @@ export function PdfEditor() {
         ].filter((c) => c.value.trim().length > 0);
         setChips(items);
       } catch {
-        /* guest mode — ignore */
+        /* ignore */
       }
-    })();
-    return () => { cancelled = true; };
+    };
+
+    supabase.auth.getSession().then(({ data }) => {
+      if (cancelled) return;
+      if (data.session?.user) loadProfileFor(data.session.user.id);
+    }).catch(() => { /* guest mode */ });
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
+      if (cancelled) return;
+      if (session?.user) loadProfileFor(session.user.id);
+      else setChips([]);
+    });
+
+    return () => { cancelled = true; sub.subscription.unsubscribe(); };
   }, []);
 
   // Init / reinit fabric when bg changes
