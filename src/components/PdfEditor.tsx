@@ -358,7 +358,7 @@ export function PdfEditor() {
             onChange={(e) => setValues((v) => ({ ...v, [i]: e.target.value }))}
             placeholder={f.label}
             title={f.label}
-            className="absolute bg-primary/5 hover:bg-primary/10 focus:bg-background border border-primary/40 focus:border-primary rounded-sm px-1 outline-none text-foreground"
+            className="absolute z-10 bg-primary/5 hover:bg-primary/10 focus:bg-background border border-primary/40 focus:border-primary rounded-sm px-1 outline-none text-foreground"
             style={{
               left: f.x * renderedScale,
               top: f.y * renderedScale,
