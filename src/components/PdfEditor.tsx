@@ -105,7 +105,7 @@ export function PdfEditor() {
       return fetchProfile().then((p) => {
         const profile = unwrapServerFn(p);
         if (!profile) return;
-        const prof = profile as Record<string, string | null>;
+        const prof = profile as unknown as Record<string, string | null>;
         const fullAddress = [prof.address_street, prof.address_number].filter(Boolean).join(" ").trim();
         const fullCity = [prof.address_postal, prof.address_city].filter(Boolean).join(" ").trim();
         const items: { label: string; value: string }[] = [
@@ -369,7 +369,7 @@ export function PdfEditor() {
       const currentUser = authState.user;
       if (currentUser) {
         try {
-          unwrapServerFn(await consume());
+          unwrapServerFn<{ source: "premium" | "credit" | "free" }>(await consume());
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           if (msg.includes("όριο") || msg.includes("QUOTA_EXCEEDED")) {
