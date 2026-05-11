@@ -218,10 +218,19 @@ export function PdfEditor() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error("Πρέπει να είσαι συνδεδεμένος.");
       const ts = Date.now();
-      const baseName = originalFile.name.replace(/\.[^.]+$/, "");
-      const folder = `${user.id}/${ts}-${baseName}`;
+      const sanitize = (s: string) =>
+        s
+          .normalize("NFKD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/[^a-zA-Z0-9._-]+/g, "_")
+          .replace(/_+/g, "_")
+          .replace(/^_+|_+$/g, "")
+          .slice(0, 80) || "file";
+      const safeFullName = sanitize(originalFile.name);
+      const baseName = sanitize(originalFile.name.replace(/\.[^.]+$/, ""));
+      const folder = `${user.id}/${ts}_${baseName}`;
 
-      const originalPath = `${folder}/original-${originalFile.name}`;
+      const originalPath = `${folder}/original_${safeFullName}`;
       const normalizedPath = `${folder}/normalized.pdf`;
       const filledPath = `${folder}/filled.pdf`;
 
@@ -258,7 +267,7 @@ export function PdfEditor() {
       const url = URL.createObjectURL(pdfBlob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${baseName}-συμπληρωμένο.pdf`;
+      a.download = `${originalFile.name.replace(/\.[^.]+$/, "")}-συμπληρωμένο.pdf`;
       a.click();
       URL.revokeObjectURL(url);
 
