@@ -5,6 +5,7 @@ import { Header } from "@/components/Header";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/use-auth";
 import { getMyProfile, listMyDocuments } from "@/lib/quota.functions";
+import { unwrapServerFn } from "@/lib/server-fn-client";
 import { FileText, Plus, Sparkles } from "lucide-react";
 
 export const Route = createFileRoute("/dashboard")({
@@ -25,8 +26,8 @@ function Dashboard() {
   useEffect(() => { if (!loading && !user) nav({ to: "/login" }); }, [loading, user, nav]);
   useEffect(() => {
     if (!user) return;
-    fetchProfile().then((p) => setProfile(p as Profile | null)).catch(console.error);
-    fetchDocs().then((d) => setDocs(d as Doc[])).catch(console.error);
+    fetchProfile().then((p) => setProfile(unwrapServerFn(p) as Profile | null)).catch(console.error);
+    fetchDocs().then((d) => setDocs(unwrapServerFn(d) as Doc[])).catch(console.error);
   }, [user, fetchProfile, fetchDocs]);
 
   if (loading || !user) return null;

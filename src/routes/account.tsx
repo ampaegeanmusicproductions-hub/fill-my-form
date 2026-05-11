@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth, signOut } from "@/lib/use-auth";
 import { getMyProfile, updateMyProfile } from "@/lib/quota.functions";
+import { unwrapServerFn } from "@/lib/server-fn-client";
 import { Sparkles, Loader2, Save } from "lucide-react";
 import { toast } from "sonner";
 
@@ -65,7 +66,7 @@ function AccountPage() {
   useEffect(() => {
     if (!user) return;
     fetchProfile().then((p) => {
-      const prof = p as Profile | null;
+      const prof = unwrapServerFn(p) as Profile | null;
       setProfile(prof);
       const init: Record<string, string> = {};
       FIELDS.forEach(({ key }) => { init[key] = (prof?.[key] as string | null | undefined) ?? ""; });
@@ -79,7 +80,7 @@ function AccountPage() {
   const onSave = async () => {
     setSaving(true);
     try {
-      await updateProfile({ data: form });
+      unwrapServerFn(await updateProfile({ data: form }));
       toast.success("Τα στοιχεία αποθηκεύτηκαν.");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Σφάλμα αποθήκευσης.");

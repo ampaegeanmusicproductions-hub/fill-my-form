@@ -2,6 +2,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Button } from "@/components/ui/button";
 import { useServerFn } from "@tanstack/react-start";
 import { mockBuyCredit, mockSubscribe } from "@/lib/quota.functions";
+import { unwrapServerFn } from "@/lib/server-fn-client";
 import { toast } from "sonner";
 import { Sparkles, ShoppingBag } from "lucide-react";
 
@@ -30,7 +31,7 @@ export function UpgradeModal({
           <button
             onClick={async () => {
               try {
-                const r = await buyCredit();
+                const r = unwrapServerFn(await buyCredit());
                 toast.success(`Προστέθηκε 1 credit (mock). Σύνολο: ${r.credits}`);
                 onOpenChange(false);
                 onResolved();
@@ -49,7 +50,7 @@ export function UpgradeModal({
           <button
             onClick={async () => {
               try {
-                await subscribe();
+                unwrapServerFn(await subscribe());
                 toast.success("Premium ενεργό (mock). Απεριόριστα έγγραφα!");
                 onOpenChange(false);
                 onResolved();
