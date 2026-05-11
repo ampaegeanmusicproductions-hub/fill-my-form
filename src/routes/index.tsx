@@ -1,4 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { ClientOnly } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
@@ -54,9 +55,11 @@ function Index() {
               <Sparkles className="h-3.5 w-3.5" /> Δοκίμασε αμέσως
             </div>
             <h2 className="text-2xl sm:text-3xl font-bold mt-2">Ανέβασε το έγγραφό σου</h2>
-            <p className="text-sm text-muted-foreground mt-2">Δες σε δευτερόλεπτα πώς η AI βρίσκει τα κενά πεδία.</p>
+            <p className="text-sm text-muted-foreground mt-2">Πάτα οπουδήποτε στο έγγραφο και γράψε. Χωρίς εγγραφή για την πρώτη δοκιμή.</p>
           </div>
-          <PdfEditor />
+          <ClientOnly fallback={<div className="text-center text-muted-foreground py-8">Φόρτωση επεξεργαστή…</div>}>
+            <PdfEditor />
+          </ClientOnly>
         </section>
 
         {/* How it works */}
