@@ -100,11 +100,6 @@ async function renderPdfFirstPage(
     width: canvas.width,
     height: canvas.height,
   };
-  return {
-    dataUrl: canvas.toDataURL("image/jpeg", 0.92),
-    width: canvas.width,
-    height: canvas.height,
-  };
 }
 
 export function PdfEditor() {
