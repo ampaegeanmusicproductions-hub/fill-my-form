@@ -271,6 +271,8 @@ export function PdfEditor() {
       fill: color,
       fontFamily: "Manrope, Arial, sans-serif",
       editable: true,
+      backgroundColor: "rgba(255,255,255,0.95)",
+      padding: 4,
     });
     c.add(t);
     c.setActiveObject(t);
