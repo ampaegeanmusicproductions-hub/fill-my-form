@@ -60,31 +60,70 @@ export type Database = {
       }
       profiles: {
         Row: {
+          address_city: string | null
+          address_number: string | null
+          address_postal: string | null
+          address_region: string | null
+          address_street: string | null
+          afm: string | null
+          amka: string | null
+          birth_date: string | null
+          birth_place: string | null
           created_at: string
           email: string | null
+          father_name: string | null
           full_name: string | null
           id: string
+          id_number: string | null
+          mother_name: string | null
           pay_per_use_credits: number
+          phone: string | null
           subscription_status: string
           total_documents_used: number
           updated_at: string
         }
         Insert: {
+          address_city?: string | null
+          address_number?: string | null
+          address_postal?: string | null
+          address_region?: string | null
+          address_street?: string | null
+          afm?: string | null
+          amka?: string | null
+          birth_date?: string | null
+          birth_place?: string | null
           created_at?: string
           email?: string | null
+          father_name?: string | null
           full_name?: string | null
           id: string
+          id_number?: string | null
+          mother_name?: string | null
           pay_per_use_credits?: number
+          phone?: string | null
           subscription_status?: string
           total_documents_used?: number
           updated_at?: string
         }
         Update: {
+          address_city?: string | null
+          address_number?: string | null
+          address_postal?: string | null
+          address_region?: string | null
+          address_street?: string | null
+          afm?: string | null
+          amka?: string | null
+          birth_date?: string | null
+          birth_place?: string | null
           created_at?: string
           email?: string | null
+          father_name?: string | null
           full_name?: string | null
           id?: string
+          id_number?: string | null
+          mother_name?: string | null
           pay_per_use_credits?: number
+          phone?: string | null
           subscription_status?: string
           total_documents_used?: number
           updated_at?: string
