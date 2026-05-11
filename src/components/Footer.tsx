@@ -5,8 +5,8 @@ export function Footer() {
     <footer className="border-t mt-20">
       <div className="mx-auto max-w-6xl px-4 py-10 grid sm:grid-cols-3 gap-6 text-sm">
         <div>
-          <div className="font-bold text-base">FormFill<span className="text-primary">.gr</span></div>
-          <p className="text-muted-foreground mt-2">Συμπλήρωσε ελληνικά έγγραφα ψηφιακά. Έτοιμα για gov.gr.</p>
+          <div className="font-extrabold text-xl tracking-tight">Autodilosi<span className="text-primary">.gr</span></div>
+          <p className="text-muted-foreground mt-2">Συμπληρώνεις. Υπογράφεις. Έτοιμο.</p>
         </div>
         <div>
           <div className="font-semibold mb-2">Πλοήγηση</div>
