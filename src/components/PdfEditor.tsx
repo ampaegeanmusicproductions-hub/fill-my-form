@@ -517,6 +517,33 @@ export function PdfEditor() {
         <Button size="sm" variant="outline" onClick={deleteSelected}>
           <Trash2 className="h-4 w-4 mr-1" /> Διαγραφή
         </Button>
+        {originalBg && bg && originalBg.dataUrl !== bg.dataUrl && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setPhase("cropping")}
+            title="Επανέλεγξε τις γωνίες περικοπής"
+          >
+            <Crop className="h-4 w-4 mr-1" /> Περικοπή ξανά
+          </Button>
+        )}
+        {originalBg && bg && originalBg.dataUrl !== bg.dataUrl && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setBg(originalBg)}
+            title="Χρήση αρχικής εικόνας χωρίς περικοπή"
+          >
+            <RotateCcw className="h-4 w-4 mr-1" /> Επαναφορά εικόνας
+          </Button>
+        )}
+        <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer pl-2">
+          <Checkbox
+            checked={removeTextBg}
+            onCheckedChange={(v) => setRemoveTextBg(v === true)}
+          />
+          Χωρίς λευκό background στο PDF
+        </label>
         <div className="flex-1" />
         <div className="flex items-center gap-1 text-xs text-muted-foreground">
           <FileText className="h-3.5 w-3.5" />
@@ -527,6 +554,7 @@ export function PdfEditor() {
           variant="outline"
           onClick={() => {
             setBg(null);
+            setOriginalBg(null);
             setOriginalFile(null);
             setPhase("idle");
           }}
