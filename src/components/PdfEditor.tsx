@@ -356,24 +356,51 @@ export function PdfEditor() {
           <Sparkles className="h-4 w-4 text-gold" />
           {fields.length} πεδία
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={() => { setImageDataUrl(null); setOriginalFile(null); setFields([]); setValues({}); setPhase("idle"); }}>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant={manualMode ? "default" : "outline"}
+            size="sm"
+            onClick={() => setManualMode((v) => !v)}
+          >
+            {manualMode ? "Τέλος χειροκίνητης προσθήκης" : "Πρόσθεσε πεδίο χειροκίνητα"}
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => { setImageDataUrl(null); setOriginalFile(null); setFields([]); setValues({}); setPhase("idle"); setManualMode(false); }}>
             Νέο αρχείο
           </Button>
-          <Button onClick={exportPdf} disabled={phase === "exporting"}>
+          <Button onClick={exportPdf} disabled={phase === "exporting"} size="sm">
             {phase === "exporting" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
             Εξαγωγή PDF
           </Button>
         </div>
       </div>
 
-      <div ref={containerRef} className="relative mx-auto bg-card rounded-xl shadow-sm border overflow-hidden" style={{ width: displayW, height: displayH }}>
+      {manualMode && (
+        <div className="text-xs text-muted-foreground mb-2 text-center">
+          Κάνε κλικ στο σημείο όπου θέλεις να προσθέσεις πεδίο.
+        </div>
+      )}
+
+      <div
+        ref={containerRef}
+        className={`relative mx-auto bg-card rounded-xl shadow-sm border overflow-hidden ${manualMode ? "cursor-crosshair" : ""}`}
+        style={{ width: displayW, height: displayH }}
+        onClick={(e) => {
+          if (!manualMode || !imgSize) return;
+          const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+          const x = (e.clientX - rect.left) / renderedScale;
+          const y = (e.clientY - rect.top) / renderedScale;
+          const w = Math.min(260, imgSize.w - x);
+          const h = 28;
+          setFields((prev) => [...prev, { label: `Πεδίο ${prev.length + 1}`, x, y: Math.max(0, y - h / 2), width: w, height: h }]);
+        }}
+      >
         <img src={imageDataUrl} alt="Έγγραφο" style={{ width: displayW, height: displayH, display: "block" }} />
         {fields.map((f, i) => (
           <input
             key={i}
             value={values[i] ?? ""}
             onChange={(e) => setValues((v) => ({ ...v, [i]: e.target.value }))}
+            onClick={(e) => e.stopPropagation()}
             placeholder={f.label}
             title={f.label}
             className="absolute z-10 bg-primary/5 hover:bg-primary/10 focus:bg-background border border-primary/40 focus:border-primary rounded-sm px-1 outline-none text-foreground"
