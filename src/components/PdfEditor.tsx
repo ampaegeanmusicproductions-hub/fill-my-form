@@ -85,7 +85,7 @@ async function renderPdfFirstPage(
   const pdf = await pdfjs.getDocument({ data: buf }).promise;
   const page = await pdf.getPage(1);
   const baseViewport = page.getViewport({ scale: 1 });
-  const targetWidth = Math.min(1600, baseViewport.width * 2); // ~retina-ish but capped
+  const targetWidth = Math.min(1500, baseViewport.width * 1.5);
   const scale = targetWidth / baseViewport.width;
   const viewport = page.getViewport({ scale });
   const canvas = document.createElement("canvas");
@@ -93,6 +93,13 @@ async function renderPdfFirstPage(
   canvas.height = Math.round(viewport.height);
   const ctx = canvas.getContext("2d")!;
   await page.render({ canvasContext: ctx, viewport, canvas }).promise;
+  const dataUrl = compressCanvas(canvas);
+  console.log("[PdfEditor] pdf prepared:", canvas.width, "x", canvas.height, "size:", Math.round(dataUrl.length / 1024), "KB");
+  return {
+    dataUrl,
+    width: canvas.width,
+    height: canvas.height,
+  };
   return {
     dataUrl: canvas.toDataURL("image/jpeg", 0.92),
     width: canvas.width,
