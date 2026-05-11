@@ -151,7 +151,8 @@ export function PdfEditor() {
     if (!bg) return;
     const update = () => {
       const w = wrapperRef.current?.clientWidth ?? bg.w;
-      setScale(Math.min(1, w / bg.w));
+      const maxH = Math.max(360, window.innerHeight - 240);
+      setScale(Math.min(1, w / bg.w, maxH / bg.h));
     };
     update();
     window.addEventListener("resize", update);
