@@ -23,32 +23,42 @@ const ACCEPTED = [
   ".doc",
 ].join(",");
 
+function compressCanvas(canvas: HTMLCanvasElement): string {
+  // Iteratively reduce quality to target ~100KB (base64 inflated ~33%)
+  const targetBytes = 130_000; // base64 length ≈ ~100KB binary
+  for (const q of [0.75, 0.6, 0.5, 0.4]) {
+    const url = canvas.toDataURL("image/jpeg", q);
+    if (url.length <= targetBytes) return url;
+  }
+  return canvas.toDataURL("image/jpeg", 0.4);
+}
+
 async function fileToImageDataUrl(file: File): Promise<{ dataUrl: string; width: number; height: number }> {
   // HEIC/HEIF → JPEG
   let working: Blob = file;
   const lower = file.name.toLowerCase();
   if (lower.endsWith(".heic") || lower.endsWith(".heif")) {
     const heic2any = (await import("heic2any")).default;
-    working = (await heic2any({ blob: file, toType: "image/jpeg", quality: 0.92 })) as Blob;
+    working = (await heic2any({ blob: file, toType: "image/jpeg", quality: 0.85 })) as Blob;
   }
 
   if (file.type === "application/pdf" || lower.endsWith(".pdf")) {
     return await renderPdfFirstPage(file);
   }
 
-  // Image (or converted HEIC): draw to canvas
+  // Image (or converted HEIC): draw to canvas, max width 1500px
   const url = URL.createObjectURL(working);
   try {
     const img = await loadImage(url);
     const canvas = document.createElement("canvas");
-    // Cap to a sensible width to keep AI requests fast
-    const maxW = 1600;
+    const maxW = 1500;
     const scale = Math.min(1, maxW / img.naturalWidth);
     canvas.width = Math.round(img.naturalWidth * scale);
     canvas.height = Math.round(img.naturalHeight * scale);
     const ctx = canvas.getContext("2d")!;
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+    const dataUrl = compressCanvas(canvas);
+    console.log("[PdfEditor] image prepared:", canvas.width, "x", canvas.height, "size:", Math.round(dataUrl.length / 1024), "KB");
     return { dataUrl, width: canvas.width, height: canvas.height };
   } finally {
     URL.revokeObjectURL(url);
