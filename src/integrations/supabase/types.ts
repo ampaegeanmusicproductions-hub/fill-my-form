@@ -14,7 +14,83 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      documents: {
+        Row: {
+          created_at: string
+          fields_json: Json | null
+          filled_file_path: string | null
+          id: string
+          name: string
+          normalized_pdf_path: string | null
+          original_file_path: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          fields_json?: Json | null
+          filled_file_path?: string | null
+          id?: string
+          name: string
+          normalized_pdf_path?: string | null
+          original_file_path?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          fields_json?: Json | null
+          filled_file_path?: string | null
+          id?: string
+          name?: string
+          normalized_pdf_path?: string | null
+          original_file_path?: string | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "documents_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      profiles: {
+        Row: {
+          created_at: string
+          email: string | null
+          full_name: string | null
+          id: string
+          pay_per_use_credits: number
+          subscription_status: string
+          total_documents_used: number
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          email?: string | null
+          full_name?: string | null
+          id: string
+          pay_per_use_credits?: number
+          subscription_status?: string
+          total_documents_used?: number
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          email?: string | null
+          full_name?: string | null
+          id?: string
+          pay_per_use_credits?: number
+          subscription_status?: string
+          total_documents_used?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
