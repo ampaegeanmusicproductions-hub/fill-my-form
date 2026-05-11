@@ -141,7 +141,8 @@ export function PdfEditor() {
 
         setPhase("detecting");
         const detected = await detect({ data: { imageDataUrl: dataUrl } });
-        setFields(detected);
+        const safe = Array.isArray(detected) ? detected : [];
+        setFields(safe);
         setPhase("ready");
         if (detected.length === 0) {
           toast.warning("Δεν εντοπίστηκαν κενά πεδία. Δοκίμασε καθαρότερη φωτογραφία.");
