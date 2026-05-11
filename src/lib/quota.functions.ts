@@ -117,6 +117,37 @@ export const saveDocument = createServerFn({ method: "POST" })
     return row;
   });
 
+const ProfileUpdateSchema = z.object({
+  full_name: z.string().trim().max(200).optional().nullable(),
+  father_name: z.string().trim().max(200).optional().nullable(),
+  mother_name: z.string().trim().max(200).optional().nullable(),
+  afm: z.string().trim().max(20).optional().nullable(),
+  amka: z.string().trim().max(20).optional().nullable(),
+  id_number: z.string().trim().max(30).optional().nullable(),
+  address_street: z.string().trim().max(200).optional().nullable(),
+  address_number: z.string().trim().max(20).optional().nullable(),
+  address_postal: z.string().trim().max(10).optional().nullable(),
+  address_city: z.string().trim().max(100).optional().nullable(),
+  address_region: z.string().trim().max(100).optional().nullable(),
+  phone: z.string().trim().max(30).optional().nullable(),
+  birth_date: z.string().trim().max(20).optional().nullable(),
+  birth_place: z.string().trim().max(200).optional().nullable(),
+});
+
+export const updateMyProfile = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input) => ProfileUpdateSchema.parse(input))
+  .handler(async ({ data, context }) => {
+    const { supabase, userId } = context;
+    const patch: Record<string, string | null> = {};
+    for (const [k, v] of Object.entries(data)) {
+      patch[k] = v === "" || v == null ? null : v;
+    }
+    const { error } = await supabase.from("profiles").update(patch).eq("id", userId);
+    if (error) throw new Error(error.message);
+    return { ok: true };
+  });
+
 export const listMyDocuments = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
