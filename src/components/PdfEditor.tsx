@@ -2,15 +2,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import * as fabric from "fabric";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
-import { Loader2, Upload, FileText, Download, Type, Trash2, Undo2, Redo2 } from "lucide-react";
+import { Loader2, Upload, FileText, Download, Type, Trash2, Undo2, Redo2, Crop, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
+import { Checkbox } from "@/components/ui/checkbox";
 import { supabase } from "@/integrations/supabase/client";
 import { consumeQuota, saveDocument } from "@/lib/quota.functions";
 import { UpgradeModal } from "@/components/UpgradeModal";
+import { CropPreview } from "@/components/CropPreview";
 
-type Phase = "idle" | "preparing" | "ready" | "exporting";
+type Phase = "idle" | "preparing" | "cropping" | "ready" | "exporting";
 
 const ACCEPTED = ".pdf,.jpg,.jpeg,.png,.webp,.heic,.heif";
 const MAX_W = 1400;
