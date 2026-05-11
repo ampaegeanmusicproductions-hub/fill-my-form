@@ -357,94 +357,108 @@ export function PdfEditor() {
   const exportPdf = async () => {
     if (!bg || !originalFile || !fabricRef.current) return;
     setPhase("exporting");
+    let step = "init";
     try {
+      step = "Έλεγχος ορίου χρήσης";
+      console.log("[exportPdf]", step);
       try {
         await consume();
       } catch (e) {
-        if (e instanceof Error && e.message.includes("QUOTA_EXCEEDED")) {
+        const msg = e instanceof Error ? e.message : (e instanceof Response ? `HTTP ${e.status}` : String(e));
+        if (msg.includes("QUOTA_EXCEEDED")) {
           setUpgradeOpen(true);
           setPhase("ready");
           return;
         }
-        throw e;
+        if (e instanceof Response && (e.status === 401 || e.status === 403)) {
+          throw new Error("Πρέπει να συνδεθείς για να εξάγεις το PDF.");
+        }
+        throw new Error(msg);
       }
 
-      // Composite background + fabric canvas → image
       const c = fabricRef.current;
       c.discardActiveObject();
 
-      // Optionally hide text backgrounds for export
+      step = "Προετοιμασία overlay κειμένου";
+      console.log("[exportPdf]", step);
       const textObjs = c.getObjects().filter((o) => o.type === "i-text") as fabric.IText[];
       const savedBgs = textObjs.map((o) => o.backgroundColor);
       if (removeTextBg) {
         textObjs.forEach((o) => o.set({ backgroundColor: "" }));
       }
       c.requestRenderAll();
-
       const overlay = c.toDataURL({ format: "png", multiplier: 1 });
-
-      // Restore backgrounds
       if (removeTextBg) {
         textObjs.forEach((o, i) => o.set({ backgroundColor: savedBgs[i] }));
         c.requestRenderAll();
       }
 
+      step = "Φόρτωση εικόνας υποβάθρου";
+      console.log("[exportPdf]", step);
+      const baseImg = await loadImage(bg.dataUrl);
+
+      step = "Σύνθεση εικόνας + κειμένου";
+      console.log("[exportPdf]", step, { w: bg.w, h: bg.h, textObjects: textObjs.length });
       const out = document.createElement("canvas");
       out.width = bg.w;
       out.height = bg.h;
-      const octx = out.getContext("2d")!;
+      const octx = out.getContext("2d");
+      if (!octx) throw new Error("Αδυναμία επεξεργασίας εικόνας (canvas 2D context).");
       octx.fillStyle = "#ffffff";
       octx.fillRect(0, 0, bg.w, bg.h);
-      const baseImg = await loadImage(bg.dataUrl);
       octx.drawImage(baseImg, 0, 0, bg.w, bg.h);
       const overlayImg = await loadImage(overlay);
       octx.drawImage(overlayImg, 0, 0, bg.w, bg.h);
       const finalDataUrl = out.toDataURL("image/jpeg", 0.95);
+
+      step = "Μετατροπή εικόνας σε bytes";
+      console.log("[exportPdf]", step);
       const finalBytes = await (await fetch(finalDataUrl)).arrayBuffer();
 
-      // A4 page in points (72pt = 1in). 595 x 842 pt = A4 portrait.
-      // Choose orientation matching content for less letterboxing.
+      step = "Δημιουργία PDF (A4)";
+      console.log("[exportPdf]", step);
       const A4 = { w: 595, h: 842 };
       const landscape = bg.w > bg.h;
       const pageW = landscape ? A4.h : A4.w;
       const pageH = landscape ? A4.w : A4.h;
-      const margin = 18; // ~6mm
-      const availW = pageW - margin * 2;
-      const availH = pageH - margin * 2;
-      const fit = Math.min(availW / bg.w, availH / bg.h);
+      const margin = 18;
+      const fit = Math.min((pageW - margin * 2) / bg.w, (pageH - margin * 2) / bg.h);
       const drawW = bg.w * fit;
       const drawH = bg.h * fit;
-      const x = (pageW - drawW) / 2;
-      const y = (pageH - drawH) / 2;
+      const px = (pageW - drawW) / 2;
+      const py = (pageH - drawH) / 2;
 
       const pdfDoc = await PDFDocument.create();
       const jpg = await pdfDoc.embedJpg(finalBytes);
       const page = pdfDoc.addPage([pageW, pageH]);
       page.drawRectangle({ x: 0, y: 0, width: pageW, height: pageH, color: rgb(1, 1, 1) });
-      page.drawImage(jpg, { x, y, width: drawW, height: drawH });
+      page.drawImage(jpg, { x: px, y: py, width: drawW, height: drawH });
+
+      step = "Αποθήκευση PDF";
+      console.log("[exportPdf]", step);
       const pdfBytes = await pdfDoc.save();
       const pdfBlob = new Blob([new Uint8Array(pdfBytes)], { type: "application/pdf" });
 
-      // Upload + record
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        const ts = Date.now();
-        const safeFull = sanitize(originalFile.name);
-        const baseName = sanitize(originalFile.name.replace(/\.[^.]+$/, ""));
-        const folder = `${user.id}/${ts}_${baseName}`;
-        const originalPath = `${folder}/original_${safeFull}`;
-        const filledPath = `${folder}/filled.pdf`;
-        const normalizedPath = `${folder}/normalized.pdf`;
+      step = "Ανέβασμα στο cloud";
+      console.log("[exportPdf]", step);
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          const ts = Date.now();
+          const safeFull = sanitize(originalFile.name);
+          const baseName = sanitize(originalFile.name.replace(/\.[^.]+$/, ""));
+          const folder = `${user.id}/${ts}_${baseName}`;
+          const originalPath = `${folder}/original_${safeFull}`;
+          const filledPath = `${folder}/filled.pdf`;
+          const normalizedPath = `${folder}/normalized.pdf`;
 
-        // normalized = background only as PDF
-        const normDoc = await PDFDocument.create();
-        const normBytes = await (await fetch(bg.dataUrl)).arrayBuffer();
-        const normJpg = await normDoc.embedJpg(normBytes);
-        const np = normDoc.addPage([bg.w, bg.h]);
-        np.drawImage(normJpg, { x: 0, y: 0, width: bg.w, height: bg.h });
-        const normalizedBlob = new Blob([new Uint8Array(await normDoc.save())], { type: "application/pdf" });
+          const normDoc = await PDFDocument.create();
+          const normBytes = await (await fetch(bg.dataUrl)).arrayBuffer();
+          const normJpg = await normDoc.embedJpg(normBytes);
+          const np = normDoc.addPage([bg.w, bg.h]);
+          np.drawImage(normJpg, { x: 0, y: 0, width: bg.w, height: bg.h });
+          const normalizedBlob = new Blob([new Uint8Array(await normDoc.save())], { type: "application/pdf" });
 
-        try {
           await Promise.all([
             supabase.storage.from("originals").upload(originalPath, originalFile, { upsert: true }),
             supabase.storage.from("normalized").upload(normalizedPath, normalizedBlob, { upsert: true }),
@@ -456,14 +470,16 @@ export function PdfEditor() {
               originalFilePath: originalPath,
               normalizedPdfPath: normalizedPath,
               filledFilePath: filledPath,
-              fields: c.toJSON().objects ?? [],
+              fields: (c.toJSON().objects ?? []) as unknown[],
             },
           });
-        } catch (e) {
-          console.warn("Upload/save failed (non-blocking):", e);
         }
+      } catch (e) {
+        console.warn("[exportPdf] upload/save failed (non-blocking):", e);
       }
 
+      step = "Λήψη αρχείου";
+      console.log("[exportPdf]", step);
       const url = URL.createObjectURL(pdfBlob);
       const a = document.createElement("a");
       a.href = url;
@@ -472,8 +488,12 @@ export function PdfEditor() {
       URL.revokeObjectURL(url);
       toast.success("Έτοιμο! Το αρχείο κατέβηκε.");
     } catch (e) {
-      console.error(e);
-      toast.error(e instanceof Error ? e.message : "Σφάλμα κατά την εξαγωγή.");
+      console.error(`[exportPdf] FAILED at step: ${step}`, e);
+      const reason =
+        e instanceof Error ? e.message :
+        e instanceof Response ? `HTTP ${e.status}` :
+        typeof e === "string" ? e : "άγνωστο σφάλμα";
+      toast.error(`Σφάλμα στο βήμα “${step}”: ${reason}`);
     } finally {
       setPhase("ready");
     }
