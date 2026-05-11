@@ -236,13 +236,7 @@ export function PdfEditor() {
     try {
       const out = await renderToImage(file);
       setOriginalBg(out);
-      const isPdf = lower.endsWith(".pdf") || file.type === "application/pdf";
-      if (isPdf) {
-        setBg(out);
-        setPhase("ready");
-      } else {
-        setPhase("cropping");
-      }
+      setPhase("cropping");
     } catch (e) {
       console.error(e);
       toast.error(e instanceof Error ? e.message : "Σφάλμα κατά τη φόρτωση.");
@@ -517,14 +511,14 @@ export function PdfEditor() {
         <Button size="sm" variant="outline" onClick={deleteSelected}>
           <Trash2 className="h-4 w-4 mr-1" /> Διαγραφή
         </Button>
-        {originalBg && bg && originalBg.dataUrl !== bg.dataUrl && (
+        {originalBg && (
           <Button
             size="sm"
             variant="outline"
             onClick={() => setPhase("cropping")}
-            title="Επανέλεγξε τις γωνίες περικοπής"
+            title="Ρύθμιση περιοχής εγγράφου"
           >
-            <Crop className="h-4 w-4 mr-1" /> Περικοπή ξανά
+            <Crop className="h-4 w-4 mr-1" /> Περικοπή
           </Button>
         )}
         {originalBg && bg && originalBg.dataUrl !== bg.dataUrl && (

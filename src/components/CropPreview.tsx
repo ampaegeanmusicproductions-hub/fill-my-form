@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { detectDocumentCorners, warpPerspective, type Pt } from "@/lib/auto-crop";
 import { toast } from "sonner";
 
 type Props = {
@@ -9,6 +8,62 @@ type Props = {
   onConfirm: (out: { dataUrl: string; w: number; h: number }) => void;
   onSkip: () => void;
 };
+
+export type Pt = { x: number; y: number };
+
+const CROP_TIMEOUT_MS = 5_000;
+
+function withTimeout<T>(promise: Promise<T>, message: string, ms = CROP_TIMEOUT_MS): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(message)), ms);
+    promise
+      .then((value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      });
+  });
+}
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("Αδυναμία φόρτωσης εικόνας"));
+    image.src = src;
+  });
+}
+
+async function cropImage(
+  dataUrl: string,
+  corners: [Pt, Pt, Pt, Pt],
+): Promise<{ dataUrl: string; w: number; h: number }> {
+  const image = await withTimeout(loadImage(dataUrl), "Η φόρτωση της εικόνας άργησε πολύ.");
+  const xs = corners.map((point) => point.x);
+  const ys = corners.map((point) => point.y);
+  const minX = Math.max(0, Math.floor(Math.min(...xs)));
+  const minY = Math.max(0, Math.floor(Math.min(...ys)));
+  const maxX = Math.min(image.naturalWidth, Math.ceil(Math.max(...xs)));
+  const maxY = Math.min(image.naturalHeight, Math.ceil(Math.max(...ys)));
+  const width = Math.max(1, maxX - minX);
+  const height = Math.max(1, maxY - minY);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Αδυναμία επεξεργασίας εικόνας");
+
+  context.drawImage(image, minX, minY, width, height, 0, 0, width, height);
+  return {
+    dataUrl: canvas.toDataURL("image/jpeg", 0.92),
+    w: width,
+    h: height,
+  };
+}
 
 export function CropPreview({ dataUrl, onConfirm, onSkip }: Props) {
   const [loading, setLoading] = useState(true);
@@ -22,31 +77,19 @@ export function CropPreview({ dataUrl, onConfirm, onSkip }: Props) {
     let alive = true;
     (async () => {
       try {
-        const det = await detectDocumentCorners(dataUrl);
+        const image = await withTimeout(loadImage(dataUrl), "Η προεπισκόπηση περικοπής άργησε πολύ.");
         if (!alive) return;
-        if (det) {
-          setImgSize({ w: det.imageW, h: det.imageH });
-          setCorners(det.corners);
-        } else {
-          // Fallback: full image rectangle so user can adjust manually
-          const img = new Image();
-          img.onload = () => {
-            if (!alive) return;
-            const W = img.naturalWidth, H = img.naturalHeight;
-            setImgSize({ w: W, h: H });
-            const m = Math.min(W, H) * 0.05;
-            setCorners([
-              { x: m, y: m },
-              { x: W - m, y: m },
-              { x: W - m, y: H - m },
-              { x: m, y: H - m },
-            ]);
-            toast.info("Δεν εντοπίστηκε αυτόματα το έγγραφο. Ρύθμισέ το χειροκίνητα.");
-          };
-          img.src = dataUrl;
-        }
+        const W = image.naturalWidth;
+        const H = image.naturalHeight;
+        setImgSize({ w: W, h: H });
+        setCorners([
+          { x: 0, y: 0 },
+          { x: W, y: 0 },
+          { x: W, y: H },
+          { x: 0, y: H },
+        ]);
       } catch (e) {
-        toast.error("Σφάλμα αυτόματης περικοπής. Συνεχίζουμε με την αρχική εικόνα.");
+        toast.error(e instanceof Error ? e.message : "Η περικοπή δεν φόρτωσε εγκαίρως.");
         onSkip();
       } finally {
         if (alive) setLoading(false);
@@ -87,10 +130,10 @@ export function CropPreview({ dataUrl, onConfirm, onSkip }: Props) {
     if (!corners) return;
     setLoading(true);
     try {
-      const out = await warpPerspective(dataUrl, corners);
+      const out = await withTimeout(cropImage(dataUrl, corners), "Η περικοπή άργησε πολύ. Χρησιμοποιείται η αρχική εικόνα.");
       onConfirm(out);
     } catch (e) {
-      toast.error("Σφάλμα περικοπής. Χρήση αρχικής εικόνας.");
+      toast.error(e instanceof Error ? e.message : "Σφάλμα περικοπής. Χρήση αρχικής εικόνας.");
       onSkip();
     }
   };
@@ -112,10 +155,10 @@ export function CropPreview({ dataUrl, onConfirm, onSkip }: Props) {
     <div>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2 p-3 rounded-xl border bg-card">
         <div className="text-sm">
-          Εντοπίστηκε το έγγραφο. Σύρε τις γωνίες για ρύθμιση, ή πάτα <strong>Συνέχεια</strong>.
+          Σύρε τις 4 γωνίες για να ορίσεις το έγγραφο και πάτα <strong>Συνέχεια</strong>.
         </div>
         <div className="flex gap-2">
-          <Button size="sm" variant="outline" onClick={onSkip}>Παράλειψη περικοπής</Button>
+          <Button size="sm" variant="outline" onClick={onSkip}>Παράλειψη</Button>
           <Button size="sm" onClick={confirm}>Συνέχεια</Button>
         </div>
       </div>
