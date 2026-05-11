@@ -140,12 +140,15 @@ export function PdfEditor() {
         setImgSize({ w: width, h: height });
 
         setPhase("detecting");
+        console.log("[PdfEditor] calling detectFields, dataUrl length:", dataUrl.length);
         const detected = await detect({ data: { imageDataUrl: dataUrl } });
+        console.log("[PdfEditor] detectFields returned:", detected);
         const safe = Array.isArray(detected) ? detected : [];
+        console.log("[PdfEditor] Detected fields:", safe.length);
         setFields(safe);
         setPhase("ready");
         if (safe.length === 0) {
-          toast.warning("Δεν εντοπίστηκαν κενά πεδία. Δοκίμασε καθαρότερη φωτογραφία.");
+          toast.error("Δεν εντοπίστηκαν πεδία. Δοκίμασε καθαρότερη εικόνα.");
         } else {
           toast.success(`Βρέθηκαν ${safe.length} πεδία.`);
         }
@@ -355,7 +358,7 @@ export function PdfEditor() {
             onChange={(e) => setValues((v) => ({ ...v, [i]: e.target.value }))}
             placeholder={f.label}
             title={f.label}
-            className="absolute bg-primary/5 hover:bg-primary/10 focus:bg-background border border-primary/40 focus:border-primary rounded-sm px-1 outline-none text-foreground"
+            className="absolute z-10 bg-primary/5 hover:bg-primary/10 focus:bg-background border border-primary/40 focus:border-primary rounded-sm px-1 outline-none text-foreground"
             style={{
               left: f.x * renderedScale,
               top: f.y * renderedScale,
