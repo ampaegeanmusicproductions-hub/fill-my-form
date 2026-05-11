@@ -101,21 +101,46 @@ export const detectFields = createServerFn({ method: "POST" })
     const json = (await response.json()) as {
       choices?: Array<{
         message?: {
+          content?: string;
           tool_calls?: Array<{ function?: { name?: string; arguments?: string } }>;
         };
       }>;
     };
 
-    const argsStr = json.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
-    if (!argsStr) {
-      console.error("Unexpected AI response shape:", JSON.stringify(json).slice(0, 500));
-      return [];
+    console.log("[detectFields] AI response received. Keys:", Object.keys(json));
+    const message = json.choices?.[0]?.message;
+    const argsStr = message?.tool_calls?.[0]?.function?.arguments;
+    console.log("[detectFields] tool_calls present:", !!argsStr, "content fallback:", !!message?.content);
+
+    const tryParse = (s: string): DetectedField[] | null => {
+      try {
+        const p = JSON.parse(s) as { fields?: DetectedField[] };
+        return Array.isArray(p.fields) ? p.fields : null;
+      } catch {
+        return null;
+      }
+    };
+
+    if (argsStr) {
+      const f = tryParse(argsStr);
+      if (f) {
+        console.log("[detectFields] parsed fields from tool_call:", f.length);
+        return f;
+      }
+      console.error("[detectFields] failed to parse tool args:", argsStr.slice(0, 500));
     }
-    try {
-      const parsed = JSON.parse(argsStr) as { fields: DetectedField[] };
-      return Array.isArray(parsed.fields) ? parsed.fields : [];
-    } catch (e) {
-      console.error("Failed to parse tool args:", e, argsStr.slice(0, 500));
-      return [];
+    if (message?.content) {
+      // Fallback: try to extract JSON from content
+      const m = message.content.match(/\{[\s\S]*\}/);
+      if (m) {
+        const f = tryParse(m[0]);
+        if (f) {
+          console.log("[detectFields] parsed fields from content fallback:", f.length);
+          return f;
+        }
+      }
+      console.error("[detectFields] content (no JSON parse):", message.content.slice(0, 500));
     }
+    console.error("[detectFields] Unexpected AI response shape:", JSON.stringify(json).slice(0, 800));
+    return [];
   });
