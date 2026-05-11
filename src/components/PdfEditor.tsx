@@ -141,12 +141,13 @@ export function PdfEditor() {
 
         setPhase("detecting");
         const detected = await detect({ data: { imageDataUrl: dataUrl } });
-        setFields(detected);
+        const safe = Array.isArray(detected) ? detected : [];
+        setFields(safe);
         setPhase("ready");
-        if (detected.length === 0) {
+        if (safe.length === 0) {
           toast.warning("Δεν εντοπίστηκαν κενά πεδία. Δοκίμασε καθαρότερη φωτογραφία.");
         } else {
-          toast.success(`Βρέθηκαν ${detected.length} πεδία.`);
+          toast.success(`Βρέθηκαν ${safe.length} πεδία.`);
         }
       } catch (e) {
         console.error(e);
