@@ -282,10 +282,17 @@ export function PdfEditor() {
       return;
     }
     setPhase("preparing");
+    const isPdf = lower.endsWith(".pdf") || file.type === "application/pdf";
     try {
       const out = await renderToImage(file);
       setOriginalBg(out);
-      setPhase("cropping");
+      if (isPdf) {
+        // PDFs are already clean documents — skip crop UI entirely
+        setBg(out);
+        setPhase("ready");
+      } else {
+        setPhase("cropping");
+      }
     } catch (e) {
       console.error(e);
       toast.error(e instanceof Error ? e.message : "Σφάλμα κατά τη φόρτωση.");
