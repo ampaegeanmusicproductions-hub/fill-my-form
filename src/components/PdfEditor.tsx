@@ -428,6 +428,22 @@ export function PdfEditor() {
     }
   };
 
+  if (phase === "cropping" && originalBg) {
+    return (
+      <CropPreview
+        dataUrl={originalBg.dataUrl}
+        onConfirm={(out) => {
+          setBg(out);
+          setPhase("ready");
+        }}
+        onSkip={() => {
+          setBg(originalBg);
+          setPhase("ready");
+        }}
+      />
+    );
+  }
+
   if (!bg) {
     return (
       <div
