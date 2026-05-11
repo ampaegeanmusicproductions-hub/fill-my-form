@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { buildServerFnError, logServerFnStep, type ServerFnResult } from "@/lib/server-fn-utils.server";
+import { buildServerFnError, logServerFnStep } from "@/lib/server-fn-utils.server";
 
 // Get current user's profile (auto-creates is handled by trigger)
 export const getMyProfile = createServerFn({ method: "GET" })
@@ -18,9 +18,9 @@ export const getMyProfile = createServerFn({ method: "GET" })
         .eq("id", userId)
         .maybeSingle();
       if (error) throw new Error(error.message);
-      return { ok: true, data } satisfies ServerFnResult<typeof data>;
+      return { ok: true as const, data: data ?? null };
     } catch (error) {
-      return buildServerFnError<typeof context extends never ? never : unknown>(fn, error, {
+      return buildServerFnError(fn, error, {
         step,
         defaultMessage: "Δεν ήταν δυνατή η φόρτωση του προφίλ.",
       });
