@@ -555,6 +555,22 @@ export function PdfEditor() {
         <Button size="sm" onClick={addTextAtCenter}>
           <Type className="h-4 w-4 mr-1" /> Προσθήκη κειμένου
         </Button>
+        {chips.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1 max-w-full">
+            <span className="text-xs text-muted-foreground pl-1">Γρήγορη συμπλήρωση:</span>
+            {chips.map((ch) => (
+              <button
+                key={ch.label}
+                type="button"
+                onClick={() => insertChip(ch.value)}
+                title={ch.value}
+                className="inline-flex items-center rounded-full border bg-secondary/60 hover:bg-secondary text-secondary-foreground px-2 py-0.5 text-xs transition-colors"
+              >
+                {ch.label}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="flex items-center gap-2 px-2">
           <span className="text-xs text-muted-foreground w-10">{fontSize}px</span>
           <Slider
