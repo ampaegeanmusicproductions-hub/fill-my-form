@@ -12,19 +12,15 @@ type Props = {
 export type Pt = { x: number; y: number };
 
 const CROP_TIMEOUT_MS = 5_000;
+const SNAP_RADIUS = 30;
+const SNAP_THRESHOLD = 110;
 
 function withTimeout<T>(promise: Promise<T>, message: string, ms = CROP_TIMEOUT_MS): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = window.setTimeout(() => reject(new Error(message)), ms);
     promise
-      .then((value) => {
-        window.clearTimeout(timer);
-        resolve(value);
-      })
-      .catch((error) => {
-        window.clearTimeout(timer);
-        reject(error);
-      });
+      .then((value) => { window.clearTimeout(timer); resolve(value); })
+      .catch((error) => { window.clearTimeout(timer); reject(error); });
   });
 }
 
@@ -42,27 +38,54 @@ async function cropImage(
   corners: [Pt, Pt, Pt, Pt],
 ): Promise<{ dataUrl: string; w: number; h: number }> {
   const image = await withTimeout(loadImage(dataUrl), "Η φόρτωση της εικόνας άργησε πολύ.");
-  const xs = corners.map((point) => point.x);
-  const ys = corners.map((point) => point.y);
+  const xs = corners.map((p) => p.x);
+  const ys = corners.map((p) => p.y);
   const minX = Math.max(0, Math.floor(Math.min(...xs)));
   const minY = Math.max(0, Math.floor(Math.min(...ys)));
   const maxX = Math.min(image.naturalWidth, Math.ceil(Math.max(...xs)));
   const maxY = Math.min(image.naturalHeight, Math.ceil(Math.max(...ys)));
   const width = Math.max(1, maxX - minX);
   const height = Math.max(1, maxY - minY);
-
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
-  const context = canvas.getContext("2d");
-  if (!context) throw new Error("Αδυναμία επεξεργασίας εικόνας");
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Αδυναμία επεξεργασίας εικόνας");
+  ctx.drawImage(image, minX, minY, width, height, 0, 0, width, height);
+  return { dataUrl: canvas.toDataURL("image/jpeg", 0.92), w: width, h: height };
+}
 
-  context.drawImage(image, minX, minY, width, height, 0, 0, width, height);
-  return {
-    dataUrl: canvas.toDataURL("image/jpeg", 0.92),
-    w: width,
-    h: height,
+function snapToEdge(
+  data: Uint8ClampedArray,
+  W: number,
+  H: number,
+  cx: number,
+  cy: number,
+): { x: number; y: number } | null {
+  const x0 = Math.max(1, Math.floor(cx - SNAP_RADIUS));
+  const y0 = Math.max(1, Math.floor(cy - SNAP_RADIUS));
+  const x1 = Math.min(W - 2, Math.ceil(cx + SNAP_RADIUS));
+  const y1 = Math.min(H - 2, Math.ceil(cy + SNAP_RADIUS));
+  if (x1 <= x0 || y1 <= y0) return null;
+  const lum = (x: number, y: number) => {
+    const i = (y * W + x) * 4;
+    return 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
   };
+  let bestMag = 0, bestX = -1, bestY = -1;
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const gx =
+        -lum(x - 1, y - 1) - 2 * lum(x - 1, y) - lum(x - 1, y + 1) +
+        lum(x + 1, y - 1) + 2 * lum(x + 1, y) + lum(x + 1, y + 1);
+      const gy =
+        -lum(x - 1, y - 1) - 2 * lum(x, y - 1) - lum(x + 1, y - 1) +
+        lum(x - 1, y + 1) + 2 * lum(x, y + 1) + lum(x + 1, y + 1);
+      const mag = Math.hypot(gx, gy);
+      if (mag > bestMag) { bestMag = mag; bestX = x; bestY = y; }
+    }
+  }
+  if (bestMag < SNAP_THRESHOLD || bestX < 0) return null;
+  return { x: bestX, y: bestY };
 }
 
 export function CropPreview({ dataUrl, onConfirm, onSkip }: Props) {
@@ -70,8 +93,11 @@ export function CropPreview({ dataUrl, onConfirm, onSkip }: Props) {
   const [imgSize, setImgSize] = useState<{ w: number; h: number } | null>(null);
   const [corners, setCorners] = useState<[Pt, Pt, Pt, Pt] | null>(null);
   const [scale, setScale] = useState(1);
+  const [snapEnabled, setSnapEnabled] = useState(true);
+  const [snapped, setSnapped] = useState<[boolean, boolean, boolean, boolean]>([false, false, false, false]);
   const wrapRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<number | null>(null);
+  const pixelsRef = useRef<{ data: Uint8ClampedArray; w: number; h: number } | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -81,6 +107,18 @@ export function CropPreview({ dataUrl, onConfirm, onSkip }: Props) {
         if (!alive) return;
         const W = image.naturalWidth;
         const H = image.naturalHeight;
+        // Cache image pixels for Sobel
+        try {
+          const cv = document.createElement("canvas");
+          cv.width = W; cv.height = H;
+          const ctx = cv.getContext("2d");
+          if (ctx) {
+            ctx.drawImage(image, 0, 0);
+            pixelsRef.current = { data: ctx.getImageData(0, 0, W, H).data, w: W, h: H };
+          }
+        } catch (err) {
+          console.warn("[CropPreview] cannot read pixels for snapping:", err);
+        }
         setImgSize({ w: W, h: H });
         setCorners([
           { x: 0, y: 0 },
@@ -118,11 +156,21 @@ export function CropPreview({ dataUrl, onConfirm, onSkip }: Props) {
   const onPointerMove = (e: React.PointerEvent) => {
     if (dragRef.current === null || !corners || !imgSize || !wrapRef.current) return;
     const rect = wrapRef.current.getBoundingClientRect();
-    const x = Math.max(0, Math.min(imgSize.w, (e.clientX - rect.left) / scale));
-    const y = Math.max(0, Math.min(imgSize.h, (e.clientY - rect.top) / scale));
+    let x = Math.max(0, Math.min(imgSize.w, (e.clientX - rect.left) / scale));
+    let y = Math.max(0, Math.min(imgSize.h, (e.clientY - rect.top) / scale));
+    let didSnap = false;
+    if (snapEnabled && pixelsRef.current) {
+      const p = snapToEdge(pixelsRef.current.data, pixelsRef.current.w, pixelsRef.current.h, x, y);
+      if (p) { x = p.x; y = p.y; didSnap = true; }
+    }
     const next = [...corners] as [Pt, Pt, Pt, Pt];
     next[dragRef.current] = { x, y };
     setCorners(next);
+    setSnapped((prev) => {
+      const out = [...prev] as [boolean, boolean, boolean, boolean];
+      out[dragRef.current!] = didSnap;
+      return out;
+    });
   };
   const onPointerUp = () => { dragRef.current = null; };
 
@@ -157,7 +205,15 @@ export function CropPreview({ dataUrl, onConfirm, onSkip }: Props) {
         <div className="text-sm">
           Σύρε τις 4 γωνίες για να ορίσεις το έγγραφο και πάτα <strong>Συνέχεια</strong>.
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center">
+          <Button
+            size="sm"
+            variant={snapEnabled ? "default" : "outline"}
+            onClick={() => setSnapEnabled((v) => !v)}
+            title="Αυτόματο κόλλημα στις άκρες"
+          >
+            Auto-snap: {snapEnabled ? "ON" : "OFF"}
+          </Button>
           <Button size="sm" variant="outline" onClick={onSkip}>Παράλειψη</Button>
           <Button size="sm" onClick={confirm}>Συνέχεια</Button>
         </div>
@@ -177,8 +233,12 @@ export function CropPreview({ dataUrl, onConfirm, onSkip }: Props) {
           <div
             key={i}
             onPointerDown={onPointerDown(i)}
-            className="absolute h-6 w-6 rounded-full bg-primary border-2 border-white shadow cursor-grab touch-none"
-            style={{ left: p.x * scale - 12, top: p.y * scale - 12 }}
+            className="absolute h-6 w-6 rounded-full border-2 border-white shadow cursor-grab touch-none transition-colors"
+            style={{
+              left: p.x * scale - 12,
+              top: p.y * scale - 12,
+              backgroundColor: snapped[i] ? "rgb(34,197,94)" : "hsl(var(--primary))",
+            }}
           />
         ))}
       </div>
