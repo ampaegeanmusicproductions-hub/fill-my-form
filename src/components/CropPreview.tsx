@@ -189,9 +189,12 @@ export function CropPreview({ dataUrl, onConfirm, onSkip }: Props) {
     x = Math.max(0, Math.min(imgSize.w, x));
     y = Math.max(0, Math.min(imgSize.h, y));
     let didSnap = false;
-    if (snapEnabled && pixelsRef.current) {
-      const p = snapToEdge(pixelsRef.current.data, pixelsRef.current.w, pixelsRef.current.h, x, y);
-      if (p) { x = p.x; y = p.y; didSnap = true; }
+    if (snapEnabled) {
+      const px = ensurePixels();
+      if (px) {
+        const p = snapToEdge(px.data, px.w, px.h, x * px.ratio, y * px.ratio);
+        if (p) { x = p.x / px.ratio; y = p.y / px.ratio; didSnap = true; }
+      }
     }
     const next = [...corners] as [Pt, Pt, Pt, Pt];
     next[d.idx] = { x, y };
