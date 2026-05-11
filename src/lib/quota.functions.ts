@@ -141,9 +141,9 @@ export const updateMyProfile = createServerFn({ method: "POST" })
     const { supabase, userId } = context;
     const patch: Record<string, string | null> = {};
     for (const [k, v] of Object.entries(data)) {
-      patch[k] = v === "" || v == null ? null : v;
+      patch[k] = v === "" || v == null ? null : (v as string);
     }
-    const { error } = await supabase.from("profiles").update(patch).eq("id", userId);
+    const { error } = await supabase.from("profiles").update(patch as never).eq("id", userId);
     if (error) throw new Error(error.message);
     return { ok: true };
   });
