@@ -9,6 +9,7 @@ import { Slider } from "@/components/ui/slider";
 import { Checkbox } from "@/components/ui/checkbox";
 import { supabase } from "@/integrations/supabase/client";
 import { consumeQuota, saveDocument, getMyProfile } from "@/lib/quota.functions";
+import { unwrapServerFn } from "@/lib/server-fn-client";
 import { UpgradeModal } from "@/components/UpgradeModal";
 import { CropPreview } from "@/components/CropPreview";
 
@@ -99,10 +100,12 @@ export function PdfEditor() {
   const [chips, setChips] = useState<{ label: string; value: string }[]>([]);
 
   useEffect(() => {
-    fetchProfile()
-      .then((p) => {
-        if (!p) return;
-        const prof = p as unknown as Record<string, string | null>;
+    supabase.auth.getSession().then(({ data }) => {
+      if (!data.session?.access_token) return;
+      return fetchProfile().then((p) => {
+        const profile = unwrapServerFn(p);
+        if (!profile) return;
+        const prof = profile as Record<string, string | null>;
         const fullAddress = [prof.address_street, prof.address_number].filter(Boolean).join(" ").trim();
         const fullCity = [prof.address_postal, prof.address_city].filter(Boolean).join(" ").trim();
         const items: { label: string; value: string }[] = [
@@ -120,8 +123,9 @@ export function PdfEditor() {
           { label: "Τόπος Γέννησης", value: prof.birth_place ?? "" },
         ].filter((c) => c.value.trim().length > 0);
         setChips(items);
-      })
-      .catch(() => { /* not signed in or other; chips just stay empty */ });
+      });
+    })
+      .catch(() => { /* guest mode */ });
   }, [fetchProfile]);
 
   // Init / reinit fabric when bg changes
@@ -361,19 +365,20 @@ export function PdfEditor() {
     try {
       step = "Έλεγχος ορίου χρήσης";
       console.log("[exportPdf]", step);
-      try {
-        await consume();
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : (e instanceof Response ? `HTTP ${e.status}` : String(e));
-        if (msg.includes("QUOTA_EXCEEDED")) {
-          setUpgradeOpen(true);
-          setPhase("ready");
-          return;
+      const { data: authState } = await supabase.auth.getUser();
+      const currentUser = authState.user;
+      if (currentUser) {
+        try {
+          unwrapServerFn(await consume());
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (msg.includes("όριο") || msg.includes("QUOTA_EXCEEDED")) {
+            setUpgradeOpen(true);
+            setPhase("ready");
+            return;
+          }
+          throw e;
         }
-        if (e instanceof Response && (e.status === 401 || e.status === 403)) {
-          throw new Error("Πρέπει να συνδεθείς για να εξάγεις το PDF.");
-        }
-        throw new Error(msg);
       }
 
       const c = fabricRef.current;
@@ -442,7 +447,7 @@ export function PdfEditor() {
       step = "Ανέβασμα στο cloud";
       console.log("[exportPdf]", step);
       try {
-        const { data: { user } } = await supabase.auth.getUser();
+        const user = currentUser;
         if (user) {
           const ts = Date.now();
           const safeFull = sanitize(originalFile.name);
@@ -464,7 +469,7 @@ export function PdfEditor() {
             supabase.storage.from("normalized").upload(normalizedPath, normalizedBlob, { upsert: true }),
             supabase.storage.from("filled").upload(filledPath, pdfBlob, { upsert: true }),
           ]);
-          await save({
+          unwrapServerFn(await save({
             data: {
               name: baseName,
               originalFilePath: originalPath,
@@ -472,7 +477,7 @@ export function PdfEditor() {
               filledFilePath: filledPath,
               fields: (c.toJSON().objects ?? []) as unknown[],
             },
-          });
+          }));
         }
       } catch (e) {
         console.warn("[exportPdf] upload/save failed (non-blocking):", e);
