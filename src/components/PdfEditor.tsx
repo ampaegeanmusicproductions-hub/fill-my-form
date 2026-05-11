@@ -236,13 +236,7 @@ export function PdfEditor() {
     try {
       const out = await renderToImage(file);
       setOriginalBg(out);
-      const isPdf = lower.endsWith(".pdf") || file.type === "application/pdf";
-      if (isPdf) {
-        setBg(out);
-        setPhase("ready");
-      } else {
-        setPhase("cropping");
-      }
+      setPhase("cropping");
     } catch (e) {
       console.error(e);
       toast.error(e instanceof Error ? e.message : "Σφάλμα κατά τη φόρτωση.");
