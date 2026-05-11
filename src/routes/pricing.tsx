@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Check, Sparkles } from "lucide-react";
 
 export const Route = createFileRoute("/pricing")({
-  head: () => ({ meta: [{ title: "Τιμές — FormFill.gr" }, { name: "description", content: "Δωρεάν δοκιμή, €1 ανά έγγραφο ή €4.99/μήνα για απεριόριστα." }] }),
+  head: () => ({ meta: [{ title: "Τιμές — Autodilosi.gr" }, { name: "description", content: "Δωρεάν δοκιμή, €1 ανά έγγραφο ή €4.99/μήνα για απεριόριστα." }] }),
   component: Pricing,
 });
 
