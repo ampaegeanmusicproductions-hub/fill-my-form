@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Checkbox } from "@/components/ui/checkbox";
 import { supabase } from "@/integrations/supabase/client";
-import { consumeQuota, saveDocument } from "@/lib/quota.functions";
+import { consumeQuota, saveDocument, getMyProfile } from "@/lib/quota.functions";
 import { UpgradeModal } from "@/components/UpgradeModal";
 import { CropPreview } from "@/components/CropPreview";
 
