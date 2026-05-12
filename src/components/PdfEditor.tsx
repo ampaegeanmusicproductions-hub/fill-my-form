@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
-import { useBlocker } from "@tanstack/react-router";
 import { PDFDocument, rgb } from "pdf-lib";
-import { Loader2, Upload, Download, Trash2, Minus, Plus, X, PenLine, ZoomIn, ZoomOut } from "lucide-react";
+import { Loader2, Upload, Download, Trash2, Minus, Plus, X, PenLine, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
