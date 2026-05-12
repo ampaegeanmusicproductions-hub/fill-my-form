@@ -1,17 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { PDFDocument, rgb } from "pdf-lib";
-import { Loader2, Upload, Download, Trash2, Plus, Minus, PenLine, RefreshCw } from "lucide-react";
+import { Loader2, Upload, Download, Trash2, Plus, Minus, PenLine, RefreshCw, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { supabase } from "@/integrations/supabase/client";
 import { consumeQuota, saveDocument } from "@/lib/quota.functions";
+import { detectFields, type DetectedField } from "@/lib/detect-fields.functions";
 import { unwrapServerFn } from "@/lib/server-fn-client";
 import { UpgradeModal } from "@/components/UpgradeModal";
 import { SignaturePad } from "@/components/SignaturePad";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-type Phase = "idle" | "preparing" | "ready" | "exporting";
+type Phase = "idle" | "preparing" | "detecting" | "ready" | "exporting";
 
 type TextItem = {
   id: string;
