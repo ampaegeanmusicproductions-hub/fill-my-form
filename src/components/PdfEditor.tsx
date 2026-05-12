@@ -212,7 +212,8 @@ export function PdfEditor() {
     c.on("mouse:down", (opt) => {
       if (!tapModeRef.current) return;
       if (opt.target) return; // tapping existing object → select
-      const p = opt.absolutePointer ?? opt.pointer;
+      const o = opt as unknown as { absolutePointer?: { x: number; y: number }; pointer?: { x: number; y: number } };
+      const p = o.absolutePointer ?? o.pointer;
       if (!p) return;
       tapModeRef.current = false;
       setTapMode(false);
