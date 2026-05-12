@@ -237,3 +237,34 @@ export const listMyDocuments = createServerFn({ method: "GET" })
       });
     }
   });
+
+const SignedUrlSchema = z.object({
+  bucket: z.enum(["originals", "filled", "normalized"]),
+  path: z.string().min(1).max(500),
+});
+
+export const getSignedDocumentUrl = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input) => SignedUrlSchema.parse(input))
+  .handler(async ({ data, context }) => {
+    const fn = "getSignedDocumentUrl";
+    const step = "create-signed-url";
+    try {
+      const { supabase, userId } = context;
+      logServerFnStep(fn, step, { userId, bucket: data.bucket });
+      // RLS on storage.objects already restricts to user's folder; double-check prefix
+      if (!data.path.startsWith(`${userId}/`)) {
+        throw new Error("FORBIDDEN");
+      }
+      const { data: signed, error } = await supabase.storage
+        .from(data.bucket)
+        .createSignedUrl(data.path, 60 * 10);
+      if (error || !signed) throw new Error(error?.message ?? "no url");
+      return { ok: true, data: { url: signed.signedUrl } };
+    } catch (error) {
+      return buildServerFnError(fn, error, {
+        step,
+        defaultMessage: "Δεν ήταν δυνατή η δημιουργία συνδέσμου.",
+      });
+    }
+  });
