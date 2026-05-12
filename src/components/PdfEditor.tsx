@@ -647,6 +647,17 @@ export function PdfEditor() {
 
             <div className="flex-1" />
 
+            {/* New file */}
+            <button
+              onClick={resetAll}
+              className="h-[52px] px-3 rounded-xl border bg-background flex items-center justify-center gap-1.5"
+              aria-label="Νέο αρχείο"
+            >
+              <RefreshCw className="h-5 w-5" />
+              <span className="hidden sm:inline text-sm font-medium">Νέο</span>
+            </button>
+
+
             {/* Export */}
             <button
               onClick={startExportFlow}
