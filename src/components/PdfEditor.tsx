@@ -1,55 +1,73 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { PDFDocument, rgb } from "pdf-lib";
-import { Loader2, Upload, Download, Trash2, Minus, Plus, X, PenLine, RefreshCw } from "lucide-react";
+import { Loader2, Upload, Download, Trash2, Plus, Minus, PenLine, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { supabase } from "@/integrations/supabase/client";
 import { consumeQuota, saveDocument } from "@/lib/quota.functions";
 import { unwrapServerFn } from "@/lib/server-fn-client";
 import { UpgradeModal } from "@/components/UpgradeModal";
 import { SignaturePad } from "@/components/SignaturePad";
-import { CropPreview } from "@/components/CropPreview";
 
+// ─── Types ────────────────────────────────────────────────────────────────────
 type Phase = "idle" | "preparing" | "ready" | "exporting";
+
 type TextItem = {
   id: string;
-  xPercent: number;
-  yPercent: number;
+  xPct: number; // 0..1 relative to natural image size
+  yPct: number;
   text: string;
-  fontSize: number;
+  fontSize: number; // px at 1x scale (natural image width)
   color: string;
 };
+
 type SigItem = {
   id: string;
-  xPercent: number;
-  yPercent: number;
-  widthPercent: number;
+  xPct: number;
+  yPct: number;
+  wPct: number;
   dataUrl: string;
 };
 
+// ─── Constants ────────────────────────────────────────────────────────────────
 const ACCEPTED = ".pdf,.jpg,.jpeg,.png,.webp,.heic,.heif";
-const MAX_W = 1400;
-const FONT_FAMILY = "Manrope, Arial, sans-serif";
+const MAX_RENDER_W = 1400;
+const FONT = "system-ui, Arial, sans-serif";
+const QUICK_LABELS = ["Ονοματεπώνυμο", "ΑΦΜ", "ΑΔΤ", "Διεύθυνση", "Τηλέφωνο", "Ημερομηνία"] as const;
 
-function loadImage(src: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+const uid = () => Math.random().toString(36).slice(2, 10);
+
+const todayGr = () => {
+  const d = new Date();
+  return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
+};
+
+const sanitize = (s: string) =>
+  s.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9._-]+/g, "_")
+    .replace(/_+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "file";
+
+function loadImg(src: string): Promise<HTMLImageElement> {
+  return new Promise((res, rej) => {
     const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = reject;
+    img.onload = () => res(img);
+    img.onerror = rej;
     img.src = src;
   });
 }
 
-async function renderToImage(file: File): Promise<{ dataUrl: string; w: number; h: number }> {
+async function fileToImageData(file: File): Promise<{ dataUrl: string; w: number; h: number }> {
   const lower = file.name.toLowerCase();
-  let working: Blob = file;
+
+  // HEIC/HEIF → JPEG
+  let blob: Blob = file;
   if (lower.endsWith(".heic") || lower.endsWith(".heif")) {
     const heic2any = (await import("heic2any")).default;
-    working = (await heic2any({ blob: file, toType: "image/jpeg", quality: 0.9 })) as Blob;
+    blob = (await heic2any({ blob: file, toType: "image/jpeg", quality: 0.9 })) as Blob;
   }
+
+  // PDF → render first page
   if (lower.endsWith(".pdf") || file.type === "application/pdf") {
     const pdfjs = await import("pdfjs-dist");
     const workerUrl = (await import("pdfjs-dist/build/pdf.worker.min.mjs?url")).default;
@@ -58,19 +76,20 @@ async function renderToImage(file: File): Promise<{ dataUrl: string; w: number; 
     const pdf = await pdfjs.getDocument({ data: buf }).promise;
     const page = await pdf.getPage(1);
     const base = page.getViewport({ scale: 1 });
-    const scale = Math.min(2, MAX_W / base.width);
+    const scale = Math.min(2, MAX_RENDER_W / base.width);
     const vp = page.getViewport({ scale });
     const canvas = document.createElement("canvas");
     canvas.width = Math.round(vp.width);
     canvas.height = Math.round(vp.height);
-    const ctx = canvas.getContext("2d")!;
-    await page.render({ canvasContext: ctx, viewport: vp, canvas }).promise;
+    await page.render({ canvasContext: canvas.getContext("2d")!, viewport: vp, canvas }).promise;
     return { dataUrl: canvas.toDataURL("image/jpeg", 0.92), w: canvas.width, h: canvas.height };
   }
-  const url = URL.createObjectURL(working);
+
+  // Image
+  const url = URL.createObjectURL(blob);
   try {
-    const img = await loadImage(url);
-    const scale = Math.min(1, MAX_W / img.naturalWidth);
+    const img = await loadImg(url);
+    const scale = Math.min(1, MAX_RENDER_W / img.naturalWidth);
     const c = document.createElement("canvas");
     c.width = Math.round(img.naturalWidth * scale);
     c.height = Math.round(img.naturalHeight * scale);
@@ -81,394 +100,321 @@ async function renderToImage(file: File): Promise<{ dataUrl: string; w: number; 
   }
 }
 
-const sanitize = (s: string) =>
-  s.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "file";
-
-const uid = () => Math.random().toString(36).slice(2, 10);
-
+// ─── Component ────────────────────────────────────────────────────────────────
 export function PdfEditor() {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const wrapperRef = useRef<HTMLDivElement>(null);
-  const editInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const activeInputRef = useRef<HTMLInputElement>(null);
 
+  // Core state
   const [phase, setPhase] = useState<Phase>("idle");
   const [bg, setBg] = useState<{ dataUrl: string; w: number; h: number } | null>(null);
   const [originalFile, setOriginalFile] = useState<File | null>(null);
-  const [baseScale, setBaseScale] = useState(1);
-  const [zoom, setZoom] = useState(1);
 
+  // Items
   const [items, setItems] = useState<TextItem[]>([]);
   const [sigs, setSigs] = useState<SigItem[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [defaultFontSize, setDefaultFontSize] = useState(20);
-  const [keyboardOpen, setKeyboardOpen] = useState(false);
 
-  const [upgradeOpen, setUpgradeOpen] = useState(false);
+  // UI
+  const [fontSize, setFontSize] = useState(18);
+  const [zoom, setZoom] = useState(1.0); // user zoom multiplier
+  const [displayScale, setDisplayScale] = useState(1.0); // fit-to-container scale
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [sigSheet, setSigSheet] = useState(false);
-  const [cropOpen, setCropOpen] = useState(false);
-  const cropTimerRef = useRef<number | null>(null);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
+  const [profileChips, setProfileChips] = useState<{ label: string; value: string }[]>([]);
+  const [quickSheet, setQuickSheet] = useState(false);
 
   const consume = useServerFn(consumeQuota);
   const save = useServerFn(saveDocument);
 
-
-  // Responsive base scale
+  // ── Fit-to-container scale ─────────────────────────────────────────────────
   useEffect(() => {
     if (!bg) return;
     const update = () => {
-      const w = wrapperRef.current?.clientWidth ?? bg.w;
-      const reserved = 220;
-      const maxH = Math.max(360, window.innerHeight - reserved);
-      setBaseScale(Math.min(1, w / bg.w, maxH / bg.h));
+      const cw = containerRef.current?.clientWidth ?? window.innerWidth;
+      setDisplayScale(Math.min(1, cw / bg.w));
     };
     update();
-    window.addEventListener("resize", update);
-    return () => window.removeEventListener("resize", update);
+    const ro = new ResizeObserver(update);
+    if (containerRef.current) ro.observe(containerRef.current);
+    return () => ro.disconnect();
   }, [bg]);
 
-  // Visual viewport / keyboard detection
+  // ── Mobile keyboard detection ──────────────────────────────────────────────
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
-    const onResize = () => setKeyboardOpen(window.innerHeight - vv.height > 150);
+    const onResize = () => setKeyboardVisible(window.innerHeight - vv.height > 150);
     vv.addEventListener("resize", onResize);
     return () => vv.removeEventListener("resize", onResize);
   }, []);
 
-  // Focus inline edit input WITHOUT scrolling (with small delay for mobile)
+  // ── Profile chips ──────────────────────────────────────────────────────────
   useEffect(() => {
-    if (editingId && editInputRef.current) {
-      const el = editInputRef.current;
-      const t = window.setTimeout(() => {
-        try { el.focus({ preventScroll: true }); } catch { el.focus(); }
-        el.select();
-      }, 80);
-      return () => window.clearTimeout(t);
+    let alive = true;
+    const load = async (uid: string) => {
+      const { data } = await supabase.from("profiles").select("*").eq("id", uid).maybeSingle();
+      if (!data || !alive) return;
+      const p = data as Record<string, string | null>;
+      const addr = [p.address_street, p.address_number].filter(Boolean).join(" ");
+      setProfileChips([
+        { label: "Ονοματεπώνυμο", value: p.full_name ?? "" },
+        { label: "ΑΦΜ", value: p.afm ?? "" },
+        { label: "ΑΔΤ", value: p.id_number ?? "" },
+        { label: "Τηλέφωνο", value: p.phone ?? "" },
+        { label: "Διεύθυνση", value: addr },
+      ].filter(c => c.value.trim()));
+    };
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session?.user && alive) load(data.session.user.id);
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_, s) => {
+      if (!alive) return;
+      if (s?.user) load(s.user.id); else setProfileChips([]);
+    });
+    return () => { alive = false; sub.subscription.unsubscribe(); };
+  }, []);
+
+  // ── Auto-focus when editing starts ─────────────────────────────────────────
+  useEffect(() => {
+    if (editingId && activeInputRef.current) {
+      setTimeout(() => activeInputRef.current?.focus({ preventScroll: true }), 60);
     }
   }, [editingId]);
 
+  // ── Computed display size ──────────────────────────────────────────────────
+  const totalScale = displayScale * zoom;
+  const dispW = bg ? bg.w * totalScale : 0;
+  const dispH = bg ? bg.h * totalScale : 0;
+
+  // ── File handling ──────────────────────────────────────────────────────────
   const handleFile = useCallback(async (file: File) => {
-    setOriginalFile(file); setBg(null); setItems([]); setSigs([]); setZoom(1);
     const lower = file.name.toLowerCase();
-    if (lower.endsWith(".docx") || lower.endsWith(".doc")) {
-      toast.info("Word: σύντομα διαθέσιμο. Δοκίμασε PDF ή φωτογραφία προς το παρόν.");
-      setOriginalFile(null); return;
+    if (lower.endsWith(".doc") || lower.endsWith(".docx")) {
+      toast.info("Τα Word αρχεία δεν υποστηρίζονται ακόμα. Χρησιμοποίησε PDF ή φωτογραφία.");
+      return;
     }
     setPhase("preparing");
+    setBg(null); setItems([]); setSigs([]); setEditingId(null); setSelectedId(null);
+    setOriginalFile(file);
     try {
-      const out = await renderToImage(file);
+      const out = await fileToImageData(file);
       setBg(out);
+      setZoom(1.0);
       setPhase("ready");
     } catch (e) {
-      console.error(e);
       toast.error(e instanceof Error ? e.message : "Σφάλμα κατά τη φόρτωση.");
       setPhase("idle"); setOriginalFile(null);
     }
   }, []);
 
-  const onPickFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0]; if (f) void handleFile(f);
-  };
-  const onDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    const f = e.dataTransfer.files?.[0]; if (f) void handleFile(f);
-  };
-
-  // ---- Pinch & Ctrl+wheel zoom ----
-  const pointersRef = useRef(new Map<number, { x: number; y: number }>());
-  const pinchRef = useRef<{ startDist: number; startZoom: number } | null>(null);
-  const tapStartRef = useRef<{ x: number; y: number; t: number } | null>(null);
-
-  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pointersRef.current.size === 1) {
-      tapStartRef.current = { x: e.clientX, y: e.clientY, t: Date.now() };
-    } else if (pointersRef.current.size === 2) {
-      const pts = Array.from(pointersRef.current.values());
-      const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
-      pinchRef.current = { startDist: dist, startZoom: zoom };
-      tapStartRef.current = null;
-    }
+  const reset = () => {
+    setBg(null); setItems([]); setSigs([]);
+    setEditingId(null); setSelectedId(null);
+    setOriginalFile(null); setPhase("idle");
+    setZoom(1.0);
   };
 
-  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!pointersRef.current.has(e.pointerId)) return;
-    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pointersRef.current.size >= 2 && pinchRef.current) {
-      const pts = Array.from(pointersRef.current.values());
-      const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
-      const ratio = dist / pinchRef.current.startDist;
-      const next = Math.max(0.5, Math.min(3, pinchRef.current.startZoom * ratio));
-      setZoom(next);
-    }
-  };
-
-  const overlayRef = useRef<HTMLDivElement>(null);
-
-  const handleTap = async (clientX: number, clientY: number, target: EventTarget | null) => {
-    if (!bg || !overlayRef.current) return;
-    if (pointersRef.current.size > 0) return;
-    // If currently editing, commit the active input first then continue
+  // ── Tap/click to add text ──────────────────────────────────────────────────
+  const handleOverlayTap = useCallback(async (clientX: number, clientY: number) => {
+    // If we're editing, commit first then wait
     if (editingId) {
-      const active = (typeof document !== "undefined" ? document.activeElement : null) as HTMLInputElement | null;
-      if (active && typeof active.blur === "function") active.blur();
-      await new Promise((r) => setTimeout(r, 60));
+      if (activeInputRef.current) activeInputRef.current.blur();
+      await new Promise(r => setTimeout(r, 80));
     }
-    const hit = typeof document !== "undefined" ? document.elementFromPoint(clientX, clientY) as HTMLElement | null : (target as HTMLElement | null);
-    if (hit?.closest("[data-text-item]") || hit?.closest("[data-sig-item]")) return;
-    const rect = overlayRef.current.getBoundingClientRect();
-    const dW = bg.w * baseScale * zoom;
-    const dH = bg.h * baseScale * zoom;
-    const x = (clientX - rect.left) / dW;
-    const y = (clientY - rect.top) / dH;
-    if (x < 0 || y < 0 || x > 1 || y > 1) return;
+
+    // Check if tapped on existing item
+    const el = document.elementFromPoint(clientX, clientY);
+    if (el?.closest("[data-item]")) return;
+
+    const rect = overlayRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const xPct = Math.max(0, Math.min(1, (clientX - rect.left) / dispW));
+    const yPct = Math.max(0, Math.min(1, (clientY - rect.top) / dispH));
+
     const id = uid();
-    setItems((prev) => [...prev, {
-      id, xPercent: x, yPercent: y,
-      text: "", fontSize: defaultFontSize, color: "#000000",
-    }]);
+    setItems(prev => [...prev, { id, xPct, yPct, text: "", fontSize, color: "#000000" }]);
     setSelectedId(id);
     setEditingId(id);
-  };
-
-  const resetAll = () => {
-    setBg(null); setOriginalFile(null);
-    setItems([]); setSigs([]);
-    setSelectedId(null); setEditingId(null);
-    setZoom(1); setPhase("idle");
-    if (inputRef.current) inputRef.current.value = "";
-  };
-
-  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    const wasMulti = pointersRef.current.size >= 2;
-    pointersRef.current.delete(e.pointerId);
-    if (pointersRef.current.size < 2) pinchRef.current = null;
-    if (wasMulti) { tapStartRef.current = null; return; }
-    if (e.pointerType === "touch") return; // handled by onTouchEnd
-    const start = tapStartRef.current;
-    tapStartRef.current = null;
-    if (!start) return;
-    if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > 10) return;
-    if (Date.now() - start.t > 600) return;
-    handleTap(e.clientX, e.clientY, e.target);
-  };
-
-  const handleTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
-    if (e.touches.length > 0) return;
-    if (pointersRef.current.size > 0) return;
-    const t = e.changedTouches[0];
-    if (!t) return;
-    const start = tapStartRef.current;
-    tapStartRef.current = null;
-    if (!start) return;
-    if (Math.hypot(t.clientX - start.x, t.clientY - start.y) > 10) return;
-    if (Date.now() - start.t > 600) return;
-    e.preventDefault();
-    handleTap(t.clientX, t.clientY, e.target);
-  };
-
-  // Ctrl+wheel zoom (desktop)
-  useEffect(() => {
-    const el = wrapperRef.current;
-    if (!el) return;
-    const onWheel = (ev: WheelEvent) => {
-      if (!ev.ctrlKey && !ev.metaKey) return;
-      ev.preventDefault();
-      setZoom((z) => Math.max(0.5, Math.min(3, z * (ev.deltaY < 0 ? 1.1 : 0.9))));
-    };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
-  }, [bg]);
+  }, [editingId, dispW, dispH, fontSize]);
 
   const commitEdit = (id: string, text: string) => {
-    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, text } : it)).filter((it) => it.id !== id || it.text.trim().length > 0));
+    setItems(prev => {
+      const next = prev.map(it => it.id === id ? { ...it, text } : it);
+      return next.filter(it => it.id !== id || it.text.trim().length > 0);
+    });
     setEditingId(null);
   };
-  const beginEdit = (id: string) => { setSelectedId(id); setEditingId(id); };
+
   const removeItem = (id: string) => {
-    setItems((prev) => prev.filter((it) => it.id !== id));
+    setItems(prev => prev.filter(it => it.id !== id));
     if (selectedId === id) setSelectedId(null);
     if (editingId === id) setEditingId(null);
   };
+
   const removeSig = (id: string) => {
-    setSigs((prev) => prev.filter((s) => s.id !== id));
+    setSigs(prev => prev.filter(s => s.id !== id));
     if (selectedId === id) setSelectedId(null);
   };
 
-  const adjustSize = (delta: number) => {
-    if (!selectedId) { setDefaultFontSize((s) => Math.max(8, Math.min(80, s + delta))); return; }
-    setItems((prev) => prev.map((it) => it.id === selectedId ? { ...it, fontSize: Math.max(8, Math.min(80, it.fontSize + delta)) } : it));
+  const adjustFontSize = (delta: number) => {
+    const newSize = Math.max(8, Math.min(80, fontSize + delta));
+    setFontSize(newSize);
+    if (selectedId) {
+      setItems(prev => prev.map(it => it.id === selectedId ? { ...it, fontSize: newSize } : it));
+    }
+  };
+
+  const insertQuick = (label: string, value: string) => {
+    setQuickSheet(false);
+    const text = label === "Ημερομηνία" && !value ? todayGr() : value;
+    if (!text) return;
+    const id = uid();
+    setItems(prev => [...prev, { id, xPct: 0.05, yPct: 0.05, text, fontSize, color: "#000000" }]);
+    setSelectedId(id);
+    setEditingId(id);
   };
 
   const addSignature = (dataUrl: string) => {
     setSigSheet(false);
     const id = uid();
-    setSigs((prev) => [...prev, { id, xPercent: 0.1, yPercent: 0.7, widthPercent: 0.3, dataUrl }]);
+    setSigs(prev => [...prev, { id, xPct: 0.1, yPct: 0.75, wPct: 0.25, dataUrl }]);
     setSelectedId(id);
   };
 
-  // ---- Crop-before-export flow ----
-  const startExportFlow = () => {
-    if (!bg || phase === "exporting") return;
-    setCropOpen(true);
-    if (cropTimerRef.current) window.clearTimeout(cropTimerRef.current);
-    cropTimerRef.current = window.setTimeout(() => {
-      setCropOpen(false);
-      void doExport(bg);
-    }, 3000);
-  };
-  const cancelCropTimer = () => {
-    if (cropTimerRef.current) { window.clearTimeout(cropTimerRef.current); cropTimerRef.current = null; }
-  };
-  const onCropConfirm = (out: { dataUrl: string; w: number; h: number }) => {
-    cancelCropTimer();
-    setBg(out);
-    setCropOpen(false);
-    void doExport(out);
-  };
-  const onCropSkip = () => {
-    cancelCropTimer();
-    setCropOpen(false);
-    if (bg) void doExport(bg);
-  };
-
-  const doExport = async (bgArg: { dataUrl: string; w: number; h: number }) => {
-    if (!originalFile) return;
+  // ── Export PDF ─────────────────────────────────────────────────────────────
+  const exportPdf = async () => {
+    if (!bg || !originalFile) return;
     setPhase("exporting");
-    let step = "init";
     try {
-      step = "Έλεγχος ορίου";
-      const { data: authState } = await supabase.auth.getUser();
-      const currentUser = authState.user;
-      if (currentUser) {
+      // Quota check (only for logged-in users)
+      const { data: authData } = await supabase.auth.getUser();
+      const user = authData.user;
+      if (user) {
         try {
           unwrapServerFn<{ source: "premium" | "credit" | "free" }>(await consume());
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
-          if (msg.includes("όριο") || msg.includes("QUOTA_EXCEEDED")) {
+          if (msg.includes("QUOTA_EXCEEDED") || msg.includes("όριο")) {
             setUpgradeOpen(true); setPhase("ready"); return;
           }
           throw e;
         }
       }
 
-      step = "Σύνθεση εικόνας";
-      const baseImg = await loadImage(bgArg.dataUrl);
-      const out = document.createElement("canvas");
-      out.width = bgArg.w; out.height = bgArg.h;
-      const octx = out.getContext("2d");
-      if (!octx) throw new Error("Αδυναμία επεξεργασίας εικόνας.");
-      octx.fillStyle = "#ffffff";
-      octx.fillRect(0, 0, bgArg.w, bgArg.h);
-      octx.drawImage(baseImg, 0, 0, bgArg.w, bgArg.h);
+      // Composite: bg + text + sigs on canvas
+      const baseImg = await loadImg(bg.dataUrl);
+      const canvas = document.createElement("canvas");
+      canvas.width = bg.w; canvas.height = bg.h;
+      const ctx = canvas.getContext("2d")!;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, bg.w, bg.h);
+      ctx.drawImage(baseImg, 0, 0);
 
-      octx.textBaseline = "top";
+      ctx.textBaseline = "top";
       for (const it of items) {
-        const text = it.text.trim();
-        if (!text) continue;
-        octx.font = `${it.fontSize}px ${FONT_FAMILY}`;
-        octx.fillStyle = it.color;
-        octx.fillText(text, it.xPercent * bgArg.w, it.yPercent * bgArg.h);
+        if (!it.text.trim()) continue;
+        ctx.font = `${it.fontSize}px ${FONT}`;
+        ctx.fillStyle = it.color;
+        ctx.fillText(it.text, it.xPct * bg.w, it.yPct * bg.h);
       }
+
       for (const s of sigs) {
         try {
-          const sigImg = await loadImage(s.dataUrl);
-          const w = s.widthPercent * bgArg.w;
-          const h = (sigImg.naturalHeight / sigImg.naturalWidth) * w;
-          octx.drawImage(sigImg, s.xPercent * bgArg.w, s.yPercent * bgArg.h, w, h);
-        } catch {}
+          const sImg = await loadImg(s.dataUrl);
+          const w = s.wPct * bg.w;
+          const h = (sImg.naturalHeight / sImg.naturalWidth) * w;
+          ctx.drawImage(sImg, s.xPct * bg.w, s.yPct * bg.h, w, h);
+        } catch { /* skip broken sig */ }
       }
 
-      step = "Δημιουργία PDF";
-      const finalDataUrl = out.toDataURL("image/jpeg", 0.95);
-      const finalBytes = await (await fetch(finalDataUrl)).arrayBuffer();
-      const A4 = { w: 595, h: 842 };
-      const landscape = bgArg.w > bgArg.h;
-      const pageW = landscape ? A4.h : A4.w;
-      const pageH = landscape ? A4.w : A4.h;
-      const margin = 18;
-      const fit = Math.min((pageW - margin * 2) / bgArg.w, (pageH - margin * 2) / bgArg.h);
-      const drawW = bgArg.w * fit;
-      const drawH = bgArg.h * fit;
-      const px = (pageW - drawW) / 2;
-      const py = (pageH - drawH) / 2;
+      // Build PDF (A4)
+      const jpegBytes = await (await fetch(canvas.toDataURL("image/jpeg", 0.95))).arrayBuffer();
+      const A4w = 595, A4h = 842;
+      const pageW = bg.w > bg.h ? A4h : A4w;
+      const pageH = bg.w > bg.h ? A4w : A4h;
+      const margin = 16;
+      const fit = Math.min((pageW - margin * 2) / bg.w, (pageH - margin * 2) / bg.h);
+      const dw = bg.w * fit, dh = bg.h * fit;
+      const dx = (pageW - dw) / 2, dy = (pageH - dh) / 2;
+
       const pdfDoc = await PDFDocument.create();
-      const jpg = await pdfDoc.embedJpg(finalBytes);
+      const jpg = await pdfDoc.embedJpg(jpegBytes);
       const page = pdfDoc.addPage([pageW, pageH]);
       page.drawRectangle({ x: 0, y: 0, width: pageW, height: pageH, color: rgb(1, 1, 1) });
-      page.drawImage(jpg, { x: px, y: py, width: drawW, height: drawH });
+      page.drawImage(jpg, { x: dx, y: dy, width: dw, height: dh });
       const pdfBytes = await pdfDoc.save();
       const pdfBlob = new Blob([new Uint8Array(pdfBytes)], { type: "application/pdf" });
 
-      step = "Ανέβασμα";
-      try {
-        if (currentUser) {
+      // Save to Supabase (non-blocking)
+      if (user) {
+        try {
           const ts = Date.now();
-          const safeFull = sanitize(originalFile.name);
           const baseName = sanitize(originalFile.name.replace(/\.[^.]+$/, ""));
-          const folder = `${currentUser.id}/${ts}_${baseName}`;
-          const originalPath = `${folder}/original_${safeFull}`;
-          const filledPath = `${folder}/filled.pdf`;
-          const normalizedPath = `${folder}/normalized.pdf`;
-          const normDoc = await PDFDocument.create();
-          const normBytes = await (await fetch(bgArg.dataUrl)).arrayBuffer();
-          const normJpg = await normDoc.embedJpg(normBytes);
-          const np = normDoc.addPage([bgArg.w, bgArg.h]);
-          np.drawImage(normJpg, { x: 0, y: 0, width: bgArg.w, height: bgArg.h });
-          const normalizedBlob = new Blob([new Uint8Array(await normDoc.save())], { type: "application/pdf" });
+          const safeFull = sanitize(originalFile.name);
+          const folder = `${user.id}/${ts}_${baseName}`;
           await Promise.all([
-            supabase.storage.from("originals").upload(originalPath, originalFile, { upsert: true }),
-            supabase.storage.from("normalized").upload(normalizedPath, normalizedBlob, { upsert: true }),
-            supabase.storage.from("filled").upload(filledPath, pdfBlob, { upsert: true }),
+            supabase.storage.from("originals").upload(`${folder}/original_${safeFull}`, originalFile, { upsert: true }),
+            supabase.storage.from("filled").upload(`${folder}/filled.pdf`, pdfBlob, { upsert: true }),
           ]);
           unwrapServerFn(await save({
             data: {
-              name: baseName, originalFilePath: originalPath,
-              normalizedPdfPath: normalizedPath, filledFilePath: filledPath,
+              name: baseName,
+              originalFilePath: `${folder}/original_${safeFull}`,
+              normalizedPdfPath: `${folder}/original_${safeFull}`, // reuse original
+              filledFilePath: `${folder}/filled.pdf`,
               fields: [...items, ...sigs] as unknown[],
             },
           }));
-        }
-      } catch (e) { console.warn("[exportPdf] upload/save failed (non-blocking):", e); }
+        } catch (e) { console.warn("[export] save failed (non-blocking):", e); }
+      }
 
-      step = "Λήψη";
+      // Download
       const url = URL.createObjectURL(pdfBlob);
       const a = document.createElement("a");
       a.href = url;
       a.download = `${originalFile.name.replace(/\.[^.]+$/, "")}-συμπληρωμένο.pdf`;
       a.click();
       URL.revokeObjectURL(url);
-      toast.success("Έτοιμο! Το αρχείο κατέβηκε.");
+      toast.success("Το PDF κατέβηκε!");
     } catch (e) {
-      console.error(`[exportPdf] FAILED at step: ${step}`, e);
-      const reason = e instanceof Error ? e.message : typeof e === "string" ? e : "άγνωστο σφάλμα";
-      toast.error(`Σφάλμα στο βήμα “${step}”: ${reason}`);
-    } finally { setPhase("ready"); }
+      console.error("[export]", e);
+      toast.error(e instanceof Error ? e.message : "Σφάλμα κατά την εξαγωγή.");
+    } finally {
+      setPhase("ready");
+    }
   };
 
-  // ============= RENDER =============
+  // ── RENDER: idle/preparing ─────────────────────────────────────────────────
   if (!bg) {
     return (
       <div
-        onDragOver={(e) => e.preventDefault()} onDrop={onDrop}
-        className="border-2 border-dashed rounded-2xl p-12 sm:p-20 text-center bg-card hover:border-primary transition cursor-pointer min-h-[60vh] flex items-center justify-center"
-        onClick={() => inputRef.current?.click()} role="button" tabIndex={0}
+        className="border-2 border-dashed rounded-2xl p-10 sm:p-16 text-center cursor-pointer hover:border-primary transition-colors bg-card"
+        onClick={() => fileInputRef.current?.click()}
+        onDragOver={e => e.preventDefault()}
+        onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files?.[0]; if (f) handleFile(f); }}
+        role="button" tabIndex={0}
       >
-        <input ref={inputRef} type="file" accept={ACCEPTED} className="hidden" onChange={onPickFile} />
+        <input ref={fileInputRef} type="file" accept={ACCEPTED} className="hidden"
+          onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
         {phase === "preparing" ? (
           <div className="flex flex-col items-center gap-3 text-muted-foreground">
             <Loader2 className="h-10 w-10 animate-spin text-primary" />
-            <div className="font-medium">Επεξεργασία αρχείου…</div>
+            <p className="font-medium">Επεξεργασία αρχείου…</p>
           </div>
         ) : (
-          <div className="flex flex-col items-center gap-3">
-            <div className="inline-flex h-16 w-16 items-center justify-center rounded-full bg-primary/10 text-primary">
-              <Upload className="h-7 w-7" />
+          <div className="flex flex-col items-center gap-4">
+            <div className="h-16 w-16 rounded-full bg-primary/10 flex items-center justify-center">
+              <Upload className="h-7 w-7 text-primary" />
             </div>
-            <div className="font-semibold text-lg">Σύρετε ή επιλέξτε αρχείο</div>
-            <div className="text-sm text-muted-foreground max-w-md">
-              PDF, εικόνα ή φωτογραφία από κινητό. Πάτα οπουδήποτε στο έγγραφο για να γράψεις.
+            <div>
+              <p className="font-semibold text-lg">Σύρετε ή επιλέξτε αρχείο</p>
+              <p className="text-sm text-muted-foreground mt-1">PDF, εικόνα ή φωτογραφία από κινητό</p>
             </div>
           </div>
         )}
@@ -476,106 +422,110 @@ export function PdfEditor() {
     );
   }
 
-  const effectiveScale = baseScale * zoom;
-  const displayW = bg.w * effectiveScale;
-  const displayH = bg.h * effectiveScale;
-
+  // ── RENDER: editor ─────────────────────────────────────────────────────────
   return (
     <>
-      <div ref={wrapperRef} className="relative mx-auto" style={{ width: "100%", paddingBottom: 96, touchAction: "pan-x pan-y" }}>
+      {/* Document + overlay */}
+      <div ref={containerRef} className="w-full overflow-auto">
         <div
-          className="relative mx-auto rounded-xl border bg-white shadow-sm overflow-hidden select-none"
-          style={{ width: displayW, height: displayH, maxWidth: "100%" }}
+          className="relative mx-auto bg-white shadow rounded-xl border overflow-hidden select-none"
+          style={{ width: dispW, height: dispH }}
         >
-          <img src={bg.dataUrl} alt="Έγγραφο" draggable={false} className="absolute inset-0 pointer-events-none" style={{ width: displayW, height: displayH }} />
+          {/* Background image */}
+          <img
+            src={bg.dataUrl} alt="Έγγραφο" draggable={false}
+            className="absolute inset-0 pointer-events-none"
+            style={{ width: dispW, height: dispH }}
+          />
 
           {/* Tap overlay */}
           <div
             ref={overlayRef}
             className="absolute inset-0"
-            style={{ touchAction: "none", cursor: "text", zIndex: 10 }}
-            onPointerDown={handlePointerDown}
-            onPointerMove={handlePointerMove}
-            onPointerUp={handlePointerUp}
-            onTouchEnd={handleTouchEnd}
-            onPointerCancel={(e) => { pointersRef.current.delete(e.pointerId); pinchRef.current = null; tapStartRef.current = null; }}
+            style={{ touchAction: "none", cursor: "text" }}
+            onPointerDown={e => {
+              // Desktop only — mobile uses onTouchEnd
+              if (e.pointerType === "mouse") handleOverlayTap(e.clientX, e.clientY);
+            }}
+            onTouchEnd={e => {
+              e.preventDefault();
+              const t = e.changedTouches[0];
+              if (t) handleOverlayTap(t.clientX, t.clientY);
+            }}
           >
-            {items.map((it) => {
+            {/* Text items */}
+            {items.map(it => {
               const isEditing = editingId === it.id;
               const isSelected = selectedId === it.id;
-              const left = it.xPercent * displayW;
-              const top = it.yPercent * displayH;
-              const fontPx = it.fontSize * effectiveScale;
+              const fontPx = it.fontSize * totalScale;
               return (
                 <div
                   key={it.id}
-                  data-text-item
-                  className={`absolute ${isSelected && !isEditing ? "ring-2 ring-primary ring-offset-1" : ""}`}
-                  style={{ left, top, fontSize: fontPx, fontFamily: FONT_FAMILY, color: it.color, lineHeight: 1.1 }}
-                  onPointerDown={(e) => { e.stopPropagation(); setSelectedId(it.id); }}
-                  onPointerUp={(e) => { e.stopPropagation(); if (!isEditing) beginEdit(it.id); }}
+                  data-item
+                  className="absolute"
+                  style={{ left: it.xPct * dispW, top: it.yPct * dispH, fontSize: fontPx, fontFamily: FONT, color: it.color, lineHeight: 1.15 }}
+                  onPointerDown={e => { e.stopPropagation(); setSelectedId(it.id); }}
+                  onTouchEnd={e => { e.preventDefault(); e.stopPropagation(); setSelectedId(it.id); if (!isEditing) setEditingId(it.id); }}
+                  onClick={e => { e.stopPropagation(); if (!isEditing) setEditingId(it.id); }}
                 >
                   {isEditing ? (
                     <input
-                      ref={editInputRef}
+                      ref={activeInputRef}
                       type="text"
-                      value={it.text}
-                      onChange={(e) => setItems((prev) => prev.map((p) => p.id === it.id ? { ...p, text: e.target.value } : p))}
-                      onBlur={(e) => commitEdit(it.id, e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLInputElement).blur(); }
-                        if (e.key === "Escape") { (e.target as HTMLInputElement).blur(); }
+                      defaultValue={it.text}
+                      onBlur={e => commitEdit(it.id, e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                        if (e.key === "Escape") { setItems(prev => prev.filter(p => p.id !== it.id || p.text.trim())); setEditingId(null); }
                       }}
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onClick={(e) => e.stopPropagation()}
+                      onPointerDown={e => e.stopPropagation()}
+                      onClick={e => e.stopPropagation()}
                       style={{
-                        fontSize: fontPx, fontFamily: FONT_FAMILY, color: it.color,
-                        background: "rgba(255,255,255,0.85)", border: "1px solid hsl(var(--primary))",
-                        outline: "none", padding: "2px 6px", borderRadius: 4, minWidth: 80,
-                        lineHeight: 1.1,
+                        fontSize: fontPx, fontFamily: FONT, color: it.color,
+                        background: "rgba(255,255,255,0.97)",
+                        border: "2px solid hsl(var(--primary))",
+                        borderRadius: 4, padding: "1px 6px",
+                        outline: "none", minWidth: 80, lineHeight: 1.15,
                       }}
                     />
                   ) : (
-                    <span style={{ background: "rgba(255,255,255,0.6)", padding: "0 2px", whiteSpace: "pre" }}>
-                      {it.text || " "}
+                    <span style={{ background: "rgba(255,255,255,0.75)", padding: "0 3px", whiteSpace: "pre", borderRadius: 2, outline: isSelected ? "2px solid hsl(var(--primary))" : "none" }}>
+                      {it.text}
                     </span>
                   )}
                   {isSelected && !isEditing && (
                     <button
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onClick={(e) => { e.stopPropagation(); removeItem(it.id); }}
-                      className="absolute -top-3 -right-3 h-7 w-7 rounded-full bg-destructive text-destructive-foreground shadow-md flex items-center justify-center"
-                      aria-label="Διαγραφή"
-                    >
-                      <X className="h-4 w-4" />
-                    </button>
+                      data-item
+                      onPointerDown={e => e.stopPropagation()}
+                      onClick={e => { e.stopPropagation(); removeItem(it.id); }}
+                      className="absolute -top-3 -right-3 h-6 w-6 rounded-full bg-destructive text-white shadow flex items-center justify-center text-xs font-bold"
+                    >✕</button>
                   )}
                 </div>
               );
             })}
 
-            {sigs.map((s) => {
+            {/* Signature items */}
+            {sigs.map(s => {
               const isSelected = selectedId === s.id;
-              const left = s.xPercent * displayW;
-              const top = s.yPercent * displayH;
-              const w = s.widthPercent * displayW;
+              const w = s.wPct * dispW;
               return (
                 <div
-                  key={s.id} data-sig-item
-                  className={`absolute ${isSelected ? "ring-2 ring-primary ring-offset-1" : ""}`}
-                  style={{ left, top, width: w }}
-                  onPointerDown={(e) => { e.stopPropagation(); setSelectedId(s.id); }}
+                  key={s.id}
+                  data-item
+                  className="absolute"
+                  style={{ left: s.xPct * dispW, top: s.yPct * dispH, width: w, outline: isSelected ? "2px solid hsl(var(--primary))" : "none" }}
+                  onPointerDown={e => { e.stopPropagation(); setSelectedId(s.id); }}
+                  onTouchEnd={e => { e.preventDefault(); e.stopPropagation(); setSelectedId(s.id); }}
                 >
-                  <img src={s.dataUrl} alt="" draggable={false} style={{ width: "100%", display: "block" }} />
+                  <img src={s.dataUrl} alt="Υπογραφή" draggable={false} style={{ width: "100%", display: "block" }} />
                   {isSelected && (
                     <button
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onClick={(e) => { e.stopPropagation(); removeSig(s.id); }}
-                      className="absolute -top-3 -right-3 h-7 w-7 rounded-full bg-destructive text-destructive-foreground shadow-md flex items-center justify-center"
-                      aria-label="Διαγραφή"
-                    >
-                      <X className="h-4 w-4" />
-                    </button>
+                      data-item
+                      onPointerDown={e => e.stopPropagation()}
+                      onClick={e => { e.stopPropagation(); removeSig(s.id); }}
+                      className="absolute -top-3 -right-3 h-6 w-6 rounded-full bg-destructive text-white shadow flex items-center justify-center text-xs font-bold"
+                    >✕</button>
                   )}
                 </div>
               );
@@ -584,40 +534,41 @@ export function PdfEditor() {
         </div>
 
         {items.length === 0 && sigs.length === 0 && (
-          <div className="mt-3 text-center text-xs text-muted-foreground">
-            Πάτα οπουδήποτε στο έγγραφο για να γράψεις.
-          </div>
+          <p className="mt-3 text-center text-xs text-muted-foreground">
+            Πάτα οπουδήποτε στο έγγραφο για να γράψεις
+          </p>
         )}
       </div>
 
-      {/* Sticky bottom toolbar */}
-      {!keyboardOpen && (
+      {/* ── Bottom toolbar ── */}
+      {!keyboardVisible && (
         <div
-          className="fixed left-0 right-0 z-40 border-t bg-card shadow-[0_-4px_12px_rgba(0,0,0,0.06)]"
-          style={{ bottom: 0, paddingBottom: "env(safe-area-inset-bottom)" }}
+          className="fixed left-0 right-0 bottom-0 z-50 border-t bg-background/95 backdrop-blur-sm shadow-lg"
+          style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
         >
-          <div className="mx-auto max-w-3xl px-3 py-2 flex items-center gap-2">
+          <div className="mx-auto max-w-2xl px-2 py-2 flex items-center gap-1.5">
+
             {/* Font size */}
-            <div className="h-[52px] flex items-center rounded-xl border bg-background overflow-hidden">
-              <button onClick={() => adjustSize(-2)} className="h-full w-10 flex items-center justify-center" aria-label="Μικρότερο κείμενο">
+            <div className="flex items-center rounded-xl border bg-card overflow-hidden h-12">
+              <button onClick={() => adjustFontSize(-2)} className="h-full px-3 flex items-center justify-center active:bg-muted">
                 <Minus className="h-4 w-4" />
               </button>
-              <span className="px-1 text-xs tabular-nums min-w-[28px] text-center">
-                {selectedId ? items.find((i) => i.id === selectedId)?.fontSize ?? defaultFontSize : defaultFontSize}
-              </span>
-              <button onClick={() => adjustSize(+2)} className="h-full w-10 flex items-center justify-center" aria-label="Μεγαλύτερο κείμενο">
+              <span className="px-1 text-xs tabular-nums min-w-[28px] text-center">{
+                selectedId ? (items.find(i => i.id === selectedId)?.fontSize ?? fontSize) : fontSize
+              }</span>
+              <button onClick={() => adjustFontSize(2)} className="h-full px-3 flex items-center justify-center active:bg-muted">
                 <Plus className="h-4 w-4" />
               </button>
             </div>
 
             {/* Zoom */}
-            <div className="flex h-[52px] items-center rounded-xl border bg-background overflow-hidden">
-              <button onClick={() => setZoom((z) => Math.max(0.5, Math.round((z - 0.1) * 10) / 10))} className="h-full w-10 flex items-center justify-center" aria-label="Σμίκρυνση">
-                <Minus className="h-4 w-4" />
+            <div className="flex items-center rounded-xl border bg-card overflow-hidden h-12">
+              <button onClick={() => setZoom(z => Math.max(0.5, z - 0.25))} className="h-full px-3 flex items-center active:bg-muted">
+                <Minus className="h-3 w-3" />
               </button>
-              <span className="px-1 text-xs tabular-nums min-w-[44px] text-center">{Math.round(zoom * 100)}%</span>
-              <button onClick={() => setZoom((z) => Math.min(3, Math.round((z + 0.1) * 10) / 10))} className="h-full w-10 flex items-center justify-center" aria-label="Μεγέθυνση">
-                <Plus className="h-4 w-4" />
+              <span className="px-1 text-xs tabular-nums min-w-[36px] text-center">{Math.round(zoom * 100)}%</span>
+              <button onClick={() => setZoom(z => Math.min(3, z + 0.25))} className="h-full px-3 flex items-center active:bg-muted">
+                <Plus className="h-3 w-3" />
               </button>
             </div>
 
@@ -625,78 +576,52 @@ export function PdfEditor() {
             <button
               onClick={() => {
                 if (!selectedId) return;
-                if (items.find((i) => i.id === selectedId)) removeItem(selectedId);
-                else if (sigs.find((s) => s.id === selectedId)) removeSig(selectedId);
+                if (items.find(i => i.id === selectedId)) removeItem(selectedId);
+                else if (sigs.find(s => s.id === selectedId)) removeSig(selectedId);
               }}
               disabled={!selectedId}
-              className="h-[52px] px-3 rounded-xl border bg-background text-destructive disabled:opacity-40 flex items-center justify-center"
-              aria-label="Διαγραφή επιλεγμένου"
+              className="h-12 px-3 rounded-xl border bg-card text-destructive disabled:opacity-30 flex items-center justify-center"
             >
-              <Trash2 className="h-5 w-5" />
+              <Trash2 className="h-4 w-4" />
             </button>
 
             {/* Signature */}
             <button
               onClick={() => setSigSheet(true)}
-              className="h-[52px] px-3 rounded-xl border bg-background flex items-center justify-center gap-1.5"
-              aria-label="Υπογραφή"
+              className="h-12 px-3 rounded-xl border bg-card flex items-center justify-center"
             >
-              <PenLine className="h-5 w-5" />
-              <span className="hidden sm:inline text-sm font-medium">Υπογραφή</span>
+              <PenLine className="h-4 w-4" />
             </button>
-
-            <div className="flex-1" />
 
             {/* New file */}
             <button
-              onClick={resetAll}
-              className="h-[52px] px-3 rounded-xl border bg-background flex items-center justify-center gap-1.5"
-              aria-label="Νέο αρχείο"
+              onClick={reset}
+              className="h-12 px-3 rounded-xl border bg-card flex items-center justify-center"
+              title="Νέο αρχείο"
             >
-              <RefreshCw className="h-5 w-5" />
-              <span className="hidden sm:inline text-sm font-medium">Νέο</span>
+              <RefreshCw className="h-4 w-4" />
             </button>
 
-
-            {/* Export */}
+            {/* Export PDF */}
             <button
-              onClick={startExportFlow}
+              onClick={exportPdf}
               disabled={phase === "exporting"}
-              className="h-[52px] px-5 rounded-xl bg-primary text-primary-foreground font-semibold flex items-center justify-center gap-1.5 disabled:opacity-60"
+              className="h-12 flex-1 rounded-xl bg-primary text-primary-foreground font-semibold flex items-center justify-center gap-1.5 disabled:opacity-60 min-w-[72px]"
             >
-              {phase === "exporting" ? <Loader2 className="h-5 w-5 animate-spin" /> : <Download className="h-5 w-5" />}
+              {phase === "exporting"
+                ? <Loader2 className="h-4 w-4 animate-spin" />
+                : <Download className="h-4 w-4" />}
               <span>PDF</span>
             </button>
           </div>
         </div>
       )}
 
-      {/* Crop dialog (before export) */}
-      <Dialog open={cropOpen} onOpenChange={(open) => { if (!open) onCropSkip(); }}>
-        <DialogContent
-          className="max-w-3xl"
-          onPointerDownCapture={cancelCropTimer}
-        >
-          <DialogHeader>
-            <DialogTitle>Κόψε το περιττό φόντο</DialogTitle>
-          </DialogHeader>
-          {bg && (
-            <CropPreview
-              dataUrl={bg.dataUrl}
-              onConfirm={onCropConfirm}
-              onSkip={onCropSkip}
-            />
-          )}
-          <p className="text-xs text-muted-foreground">Αν δεν κάνεις τίποτα, θα γίνει αυτόματη παράλειψη σε 3 δευτερόλεπτα.</p>
-        </DialogContent>
-      </Dialog>
-
       {/* Export overlay */}
       {phase === "exporting" && (
         <div className="fixed inset-0 z-[60] bg-background/95 flex flex-col items-center justify-center gap-3">
           <Loader2 className="h-10 w-10 animate-spin text-primary" />
-          <div className="text-base font-semibold">Δημιουργία PDF…</div>
-          <div className="text-xs text-muted-foreground">Λίγα δευτερόλεπτα</div>
+          <p className="font-semibold">Δημιουργία PDF…</p>
         </div>
       )}
 
@@ -710,7 +635,31 @@ export function PdfEditor() {
         </SheetContent>
       </Sheet>
 
-      <UpgradeModal open={upgradeOpen} onOpenChange={setUpgradeOpen} onResolved={() => bg && void doExport(bg)} />
+      {/* Quick profile sheet */}
+      <Sheet open={quickSheet} onOpenChange={setQuickSheet}>
+        <SheetContent side="bottom" className="rounded-t-2xl">
+          <SheetHeader><SheetTitle>Στοιχεία μου</SheetTitle></SheetHeader>
+          <div className="mt-4 grid grid-cols-2 gap-2">
+            {QUICK_LABELS.map(label => {
+              const chip = profileChips.find(c => c.label === label);
+              return (
+                <button
+                  key={label}
+                  onClick={() => insertQuick(label, chip?.value ?? "")}
+                  className="text-left rounded-lg border bg-card hover:bg-accent px-3 py-3"
+                >
+                  <div className="text-xs text-muted-foreground">{label}</div>
+                  <div className="text-sm font-medium truncate">
+                    {label === "Ημερομηνία" ? todayGr() : (chip?.value || "Συμπλήρωσε…")}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      <UpgradeModal open={upgradeOpen} onOpenChange={setUpgradeOpen} onResolved={exportPdf} />
     </>
   );
 }
