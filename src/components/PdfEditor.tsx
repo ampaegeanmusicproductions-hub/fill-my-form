@@ -96,7 +96,7 @@ export function PdfEditor() {
   const fabricRef = useRef<fabric.Canvas | null>(null);
   const historyRef = useRef<{ stack: string[]; idx: number; suspend: boolean }>({ stack: [], idx: -1, suspend: false });
   const autoSaveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const tapModeRef = useRef(false);
+  
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [bg, setBg] = useState<{ dataUrl: string; w: number; h: number } | null>(null);
