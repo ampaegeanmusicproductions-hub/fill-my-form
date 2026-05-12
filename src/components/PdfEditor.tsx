@@ -527,6 +527,64 @@ export function PdfEditor() {
               );
             })}
 
+            {/* AI-detected fields */}
+            {aiFields.map(f => {
+              const w = Math.max(60, f.widthPct * dispW);
+              const h = Math.max(20, f.heightPct * dispH);
+              const fontPx = Math.max(12, h * 0.65);
+              const isMulti = f.type === "multiline";
+              const onChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+                const v = e.target.value;
+                setAiFields(prev => prev.map(p => p.id === f.id ? { ...p, value: v } : p));
+              };
+              const baseStyle: React.CSSProperties = {
+                width: w,
+                height: isMulti ? Math.max(h, fontPx * 2.4) : h,
+                fontSize: fontPx,
+                fontFamily: FONT,
+                color: "#0a3a8c",
+                background: "rgba(255,255,255,0.85)",
+                border: "none",
+                borderBottom: "2px solid hsl(var(--primary))",
+                borderRadius: 2,
+                padding: "0 4px",
+                outline: "none",
+                lineHeight: 1.1,
+                resize: "none",
+                boxSizing: "border-box",
+              };
+              return (
+                <div
+                  key={f.id}
+                  data-item
+                  className="absolute"
+                  style={{ left: f.xPct * dispW, top: f.yPct * dispH }}
+                  title={f.label}
+                  onPointerDown={e => e.stopPropagation()}
+                  onTouchEnd={e => e.stopPropagation()}
+                  onClick={e => e.stopPropagation()}
+                >
+                  {isMulti ? (
+                    <textarea
+                      value={f.value}
+                      placeholder={f.label}
+                      onChange={onChange}
+                      style={baseStyle}
+                    />
+                  ) : (
+                    <input
+                      type="text"
+                      inputMode={f.type === "date" ? "numeric" : "text"}
+                      value={f.value}
+                      placeholder={f.label}
+                      onChange={onChange}
+                      style={baseStyle}
+                    />
+                  )}
+                </div>
+              );
+            })}
+
             {/* Signature items */}
             {sigs.map(s => {
               const isSelected = selectedId === s.id;
