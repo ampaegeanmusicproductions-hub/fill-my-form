@@ -99,6 +99,19 @@ export function PdfEditor() {
   const save = useServerFn(saveDocument);
   const [chips, setChips] = useState<{ label: string; value: string }[]>([]);
 
+  // Lock navigation while the user has work in progress (upload/crop/edit).
+  // Prevents any automatic router push/replace from stealing the screen.
+  // The user can still leave by explicitly confirming the browser prompt
+  // or by pressing "Νέο αρχείο" / "Εξαγωγή PDF".
+  useBlocker({
+    shouldBlockFn: () => {
+      if (phase === "idle") return false;
+      if (typeof window === "undefined") return false;
+      return !window.confirm("Έχεις έγγραφο σε επεξεργασία. Έξοδος χωρίς εξαγωγή PDF;");
+    },
+    enableBeforeUnload: () => phase !== "idle" && phase !== "exporting",
+  });
+
   useEffect(() => {
     let cancelled = false;
     const loadProfileFor = async (userId: string) => {
