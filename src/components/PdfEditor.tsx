@@ -1,17 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { PDFDocument, rgb } from "pdf-lib";
-import { Loader2, Upload, Download, Trash2, Plus, Minus, PenLine, RefreshCw } from "lucide-react";
+import { Loader2, Upload, Download, Trash2, Plus, Minus, PenLine, RefreshCw, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { supabase } from "@/integrations/supabase/client";
 import { consumeQuota, saveDocument } from "@/lib/quota.functions";
+import { detectFields, type DetectedField } from "@/lib/detect-fields.functions";
 import { unwrapServerFn } from "@/lib/server-fn-client";
 import { UpgradeModal } from "@/components/UpgradeModal";
 import { SignaturePad } from "@/components/SignaturePad";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-type Phase = "idle" | "preparing" | "ready" | "exporting";
+type Phase = "idle" | "preparing" | "detecting" | "ready" | "exporting";
 
 type TextItem = {
   id: string;
@@ -115,6 +116,7 @@ export function PdfEditor() {
   // Items
   const [items, setItems] = useState<TextItem[]>([]);
   const [sigs, setSigs] = useState<SigItem[]>([]);
+  const [aiFields, setAiFields] = useState<(DetectedField & { value: string })[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -130,6 +132,7 @@ export function PdfEditor() {
 
   const consume = useServerFn(consumeQuota);
   const save = useServerFn(saveDocument);
+  const detect = useServerFn(detectFields);
 
   // ── Fit-to-container scale ─────────────────────────────────────────────────
   useEffect(() => {
@@ -159,7 +162,7 @@ export function PdfEditor() {
     const load = async (uid: string) => {
       const { data } = await supabase.from("profiles").select("*").eq("id", uid).maybeSingle();
       if (!data || !alive) return;
-      const p = data as Record<string, string | null>;
+      const p = data as unknown as Record<string, string | null>;
       const addr = [p.address_street, p.address_number].filter(Boolean).join(" ");
       setProfileChips([
         { label: "Ονοματεπώνυμο", value: p.full_name ?? "" },
@@ -199,21 +202,40 @@ export function PdfEditor() {
       return;
     }
     setPhase("preparing");
-    setBg(null); setItems([]); setSigs([]); setEditingId(null); setSelectedId(null);
+    setBg(null); setItems([]); setSigs([]); setAiFields([]); setEditingId(null); setSelectedId(null);
     setOriginalFile(file);
     try {
       const out = await fileToImageData(file);
       setBg(out);
       setZoom(1.0);
+      setPhase("detecting");
+
+      // AI field detection (non-blocking failure → manual mode)
+      try {
+        const m = out.dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+        if (m) {
+          const result = await detect({ data: { imageBase64: m[2], mimeType: m[1] } });
+          const fields = (result?.fields ?? []) as DetectedField[];
+          if (fields.length > 0) {
+            setAiFields(fields.map(f => ({ ...f, value: "" })));
+            toast.success(`Εντοπίστηκαν ${fields.length} πεδία`);
+          } else {
+            toast.info("Δεν εντοπίστηκαν πεδία — πάτα οπουδήποτε για να γράψεις");
+          }
+        }
+      } catch (e) {
+        console.warn("[detect] failed:", e);
+        toast.info("Δεν εντοπίστηκαν πεδία — πάτα οπουδήποτε για να γράψεις");
+      }
       setPhase("ready");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Σφάλμα κατά τη φόρτωση.");
       setPhase("idle"); setOriginalFile(null);
     }
-  }, []);
+  }, [detect]);
 
   const reset = () => {
-    setBg(null); setItems([]); setSigs([]);
+    setBg(null); setItems([]); setSigs([]); setAiFields([]);
     setEditingId(null); setSelectedId(null);
     setOriginalFile(null); setPhase("idle");
     setZoom(1.0);
@@ -322,6 +344,23 @@ export function PdfEditor() {
         ctx.font = `${it.fontSize}px ${FONT}`;
         ctx.fillStyle = it.color;
         ctx.fillText(it.text, it.xPct * bg.w, it.yPct * bg.h);
+      }
+
+      // AI field values
+      for (const f of aiFields) {
+        if (!f.value.trim()) continue;
+        const h = Math.max(20, f.heightPct * bg.h);
+        const fontPx = Math.max(12, h * 0.65);
+        ctx.font = `${fontPx}px ${FONT}`;
+        ctx.fillStyle = "#0a3a8c";
+        if (f.type === "multiline") {
+          const lines = f.value.split("\n");
+          lines.forEach((line, i) => {
+            ctx.fillText(line, f.xPct * bg.w, f.yPct * bg.h + i * fontPx * 1.2);
+          });
+        } else {
+          ctx.fillText(f.value, f.xPct * bg.w, f.yPct * bg.h);
+        }
       }
 
       for (const s of sigs) {
@@ -505,6 +544,64 @@ export function PdfEditor() {
               );
             })}
 
+            {/* AI-detected fields */}
+            {aiFields.map(f => {
+              const w = Math.max(60, f.widthPct * dispW);
+              const h = Math.max(20, f.heightPct * dispH);
+              const fontPx = Math.max(12, h * 0.65);
+              const isMulti = f.type === "multiline";
+              const onChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+                const v = e.target.value;
+                setAiFields(prev => prev.map(p => p.id === f.id ? { ...p, value: v } : p));
+              };
+              const baseStyle: React.CSSProperties = {
+                width: w,
+                height: isMulti ? Math.max(h, fontPx * 2.4) : h,
+                fontSize: fontPx,
+                fontFamily: FONT,
+                color: "#0a3a8c",
+                background: "rgba(255,255,255,0.85)",
+                border: "none",
+                borderBottom: "2px solid hsl(var(--primary))",
+                borderRadius: 2,
+                padding: "0 4px",
+                outline: "none",
+                lineHeight: 1.1,
+                resize: "none",
+                boxSizing: "border-box",
+              };
+              return (
+                <div
+                  key={f.id}
+                  data-item
+                  className="absolute"
+                  style={{ left: f.xPct * dispW, top: f.yPct * dispH }}
+                  title={f.label}
+                  onPointerDown={e => e.stopPropagation()}
+                  onTouchEnd={e => e.stopPropagation()}
+                  onClick={e => e.stopPropagation()}
+                >
+                  {isMulti ? (
+                    <textarea
+                      value={f.value}
+                      placeholder={f.label}
+                      onChange={onChange}
+                      style={baseStyle}
+                    />
+                  ) : (
+                    <input
+                      type="text"
+                      inputMode={f.type === "date" ? "numeric" : "text"}
+                      value={f.value}
+                      placeholder={f.label}
+                      onChange={onChange}
+                      style={baseStyle}
+                    />
+                  )}
+                </div>
+              );
+            })}
+
             {/* Signature items */}
             {sigs.map(s => {
               const isSelected = selectedId === s.id;
@@ -622,6 +719,14 @@ export function PdfEditor() {
         <div className="fixed inset-0 z-[60] bg-background/95 flex flex-col items-center justify-center gap-3">
           <Loader2 className="h-10 w-10 animate-spin text-primary" />
           <p className="font-semibold">Δημιουργία PDF…</p>
+        </div>
+      )}
+
+      {phase === "detecting" && (
+        <div className="fixed inset-0 z-[60] bg-background/90 flex flex-col items-center justify-center gap-3">
+          <Sparkles className="h-10 w-10 animate-pulse text-primary" />
+          <p className="font-semibold">Ανάλυση εγγράφου…</p>
+          <p className="text-xs text-muted-foreground">Εντοπισμός πεδίων με AI</p>
         </div>
       )}
 
