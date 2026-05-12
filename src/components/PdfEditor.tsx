@@ -240,7 +240,7 @@ export function PdfEditor() {
   }, [detect]);
 
   const reset = () => {
-    setBg(null); setItems([]); setSigs([]); setAiFields([]);
+    setBg(null); setItems([]); setSigs([]); setAiFields([]); setDebugRaw(null);
     setEditingId(null); setSelectedId(null);
     setOriginalFile(null); setPhase("idle");
     setZoom(1.0);
