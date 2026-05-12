@@ -640,6 +640,35 @@ export function PdfEditor() {
             Πάτα οπουδήποτε στο έγγραφο για να γράψεις
           </p>
         )}
+
+        {debugRaw && (
+          <div className="mt-4 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-left">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-sm font-semibold text-destructive">
+                AI Debug — δεν εντοπίστηκαν πεδία
+              </p>
+              <button
+                onClick={() => setDebugRaw(null)}
+                className="text-xs text-muted-foreground hover:text-foreground"
+              >
+                Κλείσιμο
+              </button>
+            </div>
+            <p className="text-xs text-muted-foreground mb-2">
+              <span className="font-medium">Error:</span> {debugRaw.error}
+            </p>
+            <p className="text-xs text-muted-foreground mb-1 font-medium">Raw response:</p>
+            <pre className="text-xs bg-background border rounded p-2 max-h-64 overflow-auto whitespace-pre-wrap break-all">
+              {debugRaw.raw || "(κενό)"}
+            </pre>
+            <button
+              onClick={() => navigator.clipboard.writeText(debugRaw.raw)}
+              className="mt-2 text-xs underline text-muted-foreground hover:text-foreground"
+            >
+              Αντιγραφή
+            </button>
+          </div>
+        )}
       </div>
 
       {/* ── Bottom toolbar ── */}
