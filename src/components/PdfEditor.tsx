@@ -482,7 +482,7 @@ export function PdfEditor() {
 
   return (
     <>
-      <div ref={wrapperRef} className="relative mx-auto min-h-[60vh]" style={{ width: "100%", paddingBottom: 96, touchAction: "pan-x pan-y" }}>
+      <div ref={wrapperRef} className="relative mx-auto" style={{ width: "100%", paddingBottom: 96, touchAction: "pan-x pan-y" }}>
         <div
           className="relative mx-auto rounded-xl border bg-white shadow-sm overflow-hidden select-none"
           style={{ width: displayW, height: displayH, maxWidth: "100%" }}
