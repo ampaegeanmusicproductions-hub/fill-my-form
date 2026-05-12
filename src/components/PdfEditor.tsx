@@ -487,11 +487,13 @@ export function PdfEditor() {
 
           {/* Tap overlay */}
           <div
+            ref={overlayRef}
             className="absolute inset-0"
-            style={{ touchAction: "manipulation", cursor: "text", zIndex: 10 }}
+            style={{ touchAction: "none", cursor: "text", zIndex: 10 }}
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
+            onTouchEnd={handleTouchEnd}
             onPointerCancel={(e) => { pointersRef.current.delete(e.pointerId); pinchRef.current = null; tapStartRef.current = null; }}
           >
             {items.map((it) => {
