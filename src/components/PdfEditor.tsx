@@ -722,6 +722,14 @@ export function PdfEditor() {
         </div>
       )}
 
+      {phase === "detecting" && (
+        <div className="fixed inset-0 z-[60] bg-background/90 flex flex-col items-center justify-center gap-3">
+          <Sparkles className="h-10 w-10 animate-pulse text-primary" />
+          <p className="font-semibold">Ανάλυση εγγράφου…</p>
+          <p className="text-xs text-muted-foreground">Εντοπισμός πεδίων με AI</p>
+        </div>
+      )}
+
       {/* Signature sheet */}
       <Sheet open={sigSheet} onOpenChange={setSigSheet}>
         <SheetContent side="bottom" className="rounded-t-2xl">
