@@ -184,15 +184,16 @@ export function PdfEditor() {
     });
     fabricRef.current = c;
 
-    // Bigger touch targets on mobile
+    // Bigger touch targets on mobile + no resize/rotate handles on mobile
     fabric.InteractiveFabricObject.ownDefaults = {
       ...fabric.InteractiveFabricObject.ownDefaults,
-      cornerSize: isMobile ? 28 : 12,
-      touchCornerSize: isMobile ? 44 : 24,
+      cornerSize: isMobile ? 0 : 12,
+      touchCornerSize: isMobile ? 0 : 24,
       transparentCorners: false,
       cornerColor: "#1f4cff",
       cornerStrokeColor: "#fff",
       borderColor: "#1f4cff",
+      hasControls: !isMobile,
     };
 
     const pushHistory = () => {
@@ -209,30 +210,22 @@ export function PdfEditor() {
     c.on("object:modified", pushHistory);
     c.on("object:removed", pushHistory);
 
-    // Tap-to-place handler
+    // Mobile: tap empty area → text sheet; tap object → selection (no auto edit sheet, use floating bar)
     c.on("mouse:down", (opt) => {
-      if (!tapModeRef.current) return;
-      if (opt.target) return; // tapping existing object → select
+      if (!isMobile) return;
+      if (opt.target) return;
       const o = opt as unknown as { absolutePointer?: { x: number; y: number }; pointer?: { x: number; y: number } };
       const p = o.absolutePointer ?? o.pointer;
       if (!p) return;
-      tapModeRef.current = false;
-      setTapMode(false);
       setTextSheet({ open: true, value: "", pos: { x: p.x, y: p.y }, editing: null });
     });
 
-    // Mobile: open edit sheet on selection of text/image
-    if (isMobile) {
-      const onSel = () => {
-        const a = c.getActiveObject();
-        if (!a) return;
-        if (a.type === "i-text" || a.type === "image") {
-          setEditSheet({ open: true, target: a });
-        }
-      };
-      c.on("selection:created", onSel);
-      c.on("selection:updated", onSel);
-    }
+    // Track selection for floating action bar
+    const onSel = () => setSelectedObj(c.getActiveObject() ?? null);
+    const onClr = () => setSelectedObj(null);
+    c.on("selection:created", onSel);
+    c.on("selection:updated", onSel);
+    c.on("selection:cleared", onClr);
 
     try {
       const key = `autodilosi:draft:${bg.dataUrl.slice(-32)}`;
