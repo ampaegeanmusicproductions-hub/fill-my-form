@@ -15,19 +15,22 @@ export const detectFields = createServerFn({ method: "POST" })
   .inputValidator((input: { imageBase64: string; mimeType: string }) => input)
   .handler(async ({ data }): Promise<{ fields: DetectedField[] }> => {
     const apiKey = process.env.ANTHROPIC_API_KEY;
+    console.log("[detectFields] API Key exists:", !!apiKey);
+
     if (!apiKey) {
       console.error("[detectFields] ANTHROPIC_API_KEY not set");
       return { fields: [] };
     }
 
+    const mediaType = (["image/jpeg", "image/png", "image/gif", "image/webp"].includes(data.mimeType)
+      ? data.mimeType
+      : "image/jpeg") as "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+
+    let text = "";
     try {
       const client = new Anthropic({ apiKey });
-      const mediaType = (["image/jpeg", "image/png", "image/gif", "image/webp"].includes(data.mimeType)
-        ? data.mimeType
-        : "image/jpeg") as "image/jpeg" | "image/png" | "image/gif" | "image/webp";
-
       const response = await client.messages.create({
-        model: "claude-opus-4-5",
+        model: "claude-sonnet-4-5-20251022",
         max_tokens: 2000,
         messages: [
           {
@@ -68,12 +71,23 @@ type = "text", "date", ή "multiline"
       });
 
       const block = response.content[0];
-      const text = block && block.type === "text" ? block.text : "";
-      const clean = text.replace(/```json|```/g, "").trim();
-      const match = clean.match(/\{[\s\S]*\}/);
-      if (!match) return { fields: [] };
-      const parsed = JSON.parse(match[0]) as { fields?: DetectedField[] };
-      return { fields: Array.isArray(parsed.fields) ? parsed.fields : [] };
+      text = block && block.type === "text" ? block.text : "";
+      console.log("[detectFields] Claude response:", text);
+
+      const cleaned = text.replace(/```json|```/g, "").trim();
+      const match = cleaned.match(/\{[\s\S]*\}/);
+      const jsonStr = match ? match[0] : cleaned;
+
+      try {
+        const parsed = JSON.parse(jsonStr);
+        if (!parsed.fields || parsed.fields.length === 0) {
+          throw new Error("NO_FIELDS");
+        }
+        return parsed as { fields: DetectedField[] };
+      } catch (e) {
+        console.error("[detectFields] Parse error:", e, "Raw text:", text);
+        return { fields: [] };
+      }
     } catch (e) {
       console.error("[detectFields] failed:", e);
       return { fields: [] };
