@@ -69,8 +69,8 @@ function stripMarkdownFences(text: string): string {
 }
 
 export async function recreateAsHtml(file: File): Promise<string> {
-  const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY as string | undefined;
-  if (!apiKey) throw new Error("Λείπει το VITE_ANTHROPIC_API_KEY");
+  // TEMP: hardcoded for testing — REMOVE before publishing
+  const apiKey = "sk-ant-api03-BIW37BU4MPV4RFeeh61A8xE5iHLqyJXoGQecLe6vnGiZGl8LRYxTEU0Bj4TbBwKJrGOtPgXAnt_s8vAU7GGlug-wlci0AAA";
 
   const base64 = await fileToJpegBase64(file);
 
