@@ -136,9 +136,9 @@ export const mockSubscribe = createServerFn({ method: "POST" })
 const SaveDocumentSchema = z.object({
   name: z.string().min(1).max(200),
   originalFilePath: z.string().min(1).max(500),
-  normalizedPdfPath: z.string().min(1).max(500),
+  normalizedPdfPath: z.string().max(500).optional().nullable(),
   filledFilePath: z.string().min(1).max(500),
-  fields: z.array(z.any()),
+  fields: z.array(z.any()).optional().default([]),
 });
 
 export const saveDocument = createServerFn({ method: "POST" })
@@ -156,9 +156,9 @@ export const saveDocument = createServerFn({ method: "POST" })
           user_id: userId,
           name: data.name,
           original_file_path: data.originalFilePath,
-          normalized_pdf_path: data.normalizedPdfPath,
+          normalized_pdf_path: data.normalizedPdfPath ?? null,
           filled_file_path: data.filledFilePath,
-          fields_json: data.fields,
+          fields_json: data.fields ?? [],
         })
         .select()
         .single();
@@ -224,16 +224,47 @@ export const listMyDocuments = createServerFn({ method: "GET" })
       logServerFnStep(fn, step, { userId });
       const { data, error } = await supabase
         .from("documents")
-        .select("id, name, created_at, filled_file_path")
+        .select("id, name, created_at, filled_file_path, original_file_path")
         .eq("user_id", userId)
         .order("created_at", { ascending: false })
-        .limit(100);
+        .limit(200);
       if (error) throw new Error(error.message);
       return { ok: true, data: data ?? [] };
     } catch (error) {
       return buildServerFnError(fn, error, {
         step,
         defaultMessage: "Δεν ήταν δυνατή η φόρτωση των εγγράφων.",
+      });
+    }
+  });
+
+const SignedUrlSchema = z.object({
+  bucket: z.enum(["originals", "filled", "normalized"]),
+  path: z.string().min(1).max(500),
+});
+
+export const getSignedDocumentUrl = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input) => SignedUrlSchema.parse(input))
+  .handler(async ({ data, context }) => {
+    const fn = "getSignedDocumentUrl";
+    const step = "create-signed-url";
+    try {
+      const { supabase, userId } = context;
+      logServerFnStep(fn, step, { userId, bucket: data.bucket });
+      // RLS on storage.objects already restricts to user's folder; double-check prefix
+      if (!data.path.startsWith(`${userId}/`)) {
+        throw new Error("FORBIDDEN");
+      }
+      const { data: signed, error } = await supabase.storage
+        .from(data.bucket)
+        .createSignedUrl(data.path, 60 * 10);
+      if (error || !signed) throw new Error(error?.message ?? "no url");
+      return { ok: true, data: { url: signed.signedUrl } };
+    } catch (error) {
+      return buildServerFnError(fn, error, {
+        step,
+        defaultMessage: "Δεν ήταν δυνατή η δημιουργία συνδέσμου.",
       });
     }
   });
