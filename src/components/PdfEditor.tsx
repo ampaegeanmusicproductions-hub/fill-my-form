@@ -218,14 +218,18 @@ export function PdfEditor() {
           const fields = (result?.fields ?? []) as DetectedField[];
           if (fields.length > 0) {
             setAiFields(fields.map(f => ({ ...f, value: "" })));
+            setDebugRaw(null);
             toast.success(`Εντοπίστηκαν ${fields.length} πεδία`);
           } else {
-            toast.info("Δεν εντοπίστηκαν πεδία — πάτα οπουδήποτε για να γράψεις");
+            setDebugRaw({ raw: result?.raw ?? "(empty)", error: result?.error ?? "NO_FIELDS" });
+            toast.info("Δεν εντοπίστηκαν πεδία — δες το debug panel παρακάτω");
           }
         }
       } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
         console.warn("[detect] failed:", e);
-        toast.info("Δεν εντοπίστηκαν πεδία — πάτα οπουδήποτε για να γράψεις");
+        setDebugRaw({ raw: "", error: msg });
+        toast.info("Σφάλμα AI — δες το debug panel");
       }
       setPhase("ready");
     } catch (e) {
