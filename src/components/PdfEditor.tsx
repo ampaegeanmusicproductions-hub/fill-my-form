@@ -206,12 +206,17 @@ export function PdfEditor() {
 
   const overlayRef = useRef<HTMLDivElement>(null);
 
-  const handleTap = (clientX: number, clientY: number, target: EventTarget | null) => {
-    if (editingId) return;
+  const handleTap = async (clientX: number, clientY: number, target: EventTarget | null) => {
     if (!bg || !overlayRef.current) return;
     if (pointersRef.current.size > 0) return;
-    const el = target as HTMLElement | null;
-    if (el?.closest("[data-text-item]") || el?.closest("[data-sig-item]")) return;
+    // If currently editing, commit the active input first then continue
+    if (editingId) {
+      const active = (typeof document !== "undefined" ? document.activeElement : null) as HTMLInputElement | null;
+      if (active && typeof active.blur === "function") active.blur();
+      await new Promise((r) => setTimeout(r, 60));
+    }
+    const hit = typeof document !== "undefined" ? document.elementFromPoint(clientX, clientY) as HTMLElement | null : (target as HTMLElement | null);
+    if (hit?.closest("[data-text-item]") || hit?.closest("[data-sig-item]")) return;
     const rect = overlayRef.current.getBoundingClientRect();
     const dW = bg.w * baseScale * zoom;
     const dH = bg.h * baseScale * zoom;
@@ -225,6 +230,14 @@ export function PdfEditor() {
     }]);
     setSelectedId(id);
     setEditingId(id);
+  };
+
+  const resetAll = () => {
+    setBg(null); setOriginalFile(null);
+    setItems([]); setSigs([]);
+    setSelectedId(null); setEditingId(null);
+    setZoom(1); setPhase("idle");
+    if (inputRef.current) inputRef.current.value = "";
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
