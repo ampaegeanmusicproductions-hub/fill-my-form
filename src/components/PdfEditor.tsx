@@ -213,34 +213,55 @@ export function PdfEditor() {
     }
   };
 
+  const overlayRef = useRef<HTMLDivElement>(null);
+
+  const handleTap = (clientX: number, clientY: number, target: EventTarget | null) => {
+    if (editingId) return;
+    if (!bg || !overlayRef.current) return;
+    if (pointersRef.current.size > 0) return;
+    const el = target as HTMLElement | null;
+    if (el?.closest("[data-text-item]") || el?.closest("[data-sig-item]")) return;
+    const rect = overlayRef.current.getBoundingClientRect();
+    const dW = bg.w * baseScale * zoom;
+    const dH = bg.h * baseScale * zoom;
+    const x = (clientX - rect.left) / dW;
+    const y = (clientY - rect.top) / dH;
+    if (x < 0 || y < 0 || x > 1 || y > 1) return;
+    const id = uid();
+    setItems((prev) => [...prev, {
+      id, xPercent: x, yPercent: y,
+      text: "", fontSize: defaultFontSize, color: "#000000",
+    }]);
+    setSelectedId(id);
+    setEditingId(id);
+  };
+
   const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
     const wasMulti = pointersRef.current.size >= 2;
     pointersRef.current.delete(e.pointerId);
     if (pointersRef.current.size < 2) pinchRef.current = null;
     if (wasMulti) { tapStartRef.current = null; return; }
-
-    // Single-tap → create text at tap position
-    if (editingId) return;
-    const target = e.target as HTMLElement;
-    if (target.closest("[data-text-item]") || target.closest("[data-sig-item]")) return;
+    if (e.pointerType === "touch") return; // handled by onTouchEnd
     const start = tapStartRef.current;
     tapStartRef.current = null;
     if (!start) return;
     if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > 10) return;
     if (Date.now() - start.t > 600) return;
+    handleTap(e.clientX, e.clientY, e.target);
+  };
 
-    const rect = e.currentTarget.getBoundingClientRect();
-    const dW = bg!.w * baseScale * zoom;
-    const dH = bg!.h * baseScale * zoom;
-    const x = (e.clientX - rect.left) / dW;
-    const y = (e.clientY - rect.top) / dH;
-    const id = uid();
-    setItems((prev) => [...prev, {
-      id, xPercent: Math.max(0, Math.min(1, x)), yPercent: Math.max(0, Math.min(1, y)),
-      text: "", fontSize: defaultFontSize, color: "#000000",
-    }]);
-    setSelectedId(id);
-    setEditingId(id);
+  const handleTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (e.touches.length > 0) return;
+    if (pointersRef.current.size > 0) return;
+    const t = e.changedTouches[0];
+    if (!t) return;
+    const start = tapStartRef.current;
+    tapStartRef.current = null;
+    if (!start) return;
+    if (Math.hypot(t.clientX - start.x, t.clientY - start.y) > 10) return;
+    if (Date.now() - start.t > 600) return;
+    e.preventDefault();
+    handleTap(t.clientX, t.clientY, e.target);
   };
 
   // Ctrl+wheel zoom (desktop)
