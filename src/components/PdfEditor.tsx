@@ -226,8 +226,10 @@ export function PdfEditor() {
     if (Date.now() - start.t > 600) return;
 
     const rect = e.currentTarget.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width;
-    const y = (e.clientY - rect.top) / rect.height;
+    const dW = bg!.w * baseScale * zoom;
+    const dH = bg!.h * baseScale * zoom;
+    const x = (e.clientX - rect.left) / dW;
+    const y = (e.clientY - rect.top) / dH;
     const id = uid();
     setItems((prev) => [...prev, {
       id, xPercent: Math.max(0, Math.min(1, x)), yPercent: Math.max(0, Math.min(1, y)),
