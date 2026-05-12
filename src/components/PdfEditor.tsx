@@ -649,22 +649,30 @@ export function PdfEditor() {
         </div>
       )}
 
-      {/* Mobile tap-mode banner */}
-      {isMobile && tapMode && (
-        <div className="mb-2 rounded-lg bg-primary/10 text-primary text-sm font-medium px-3 py-2 text-center">
-          Πάτα στο σημείο του εγγράφου για να γράψεις
-          <button className="ml-3 underline" onClick={() => { tapModeRef.current = false; setTapMode(false); }}>Άκυρο</button>
-        </div>
-      )}
-
       <div
         ref={wrapperRef}
         className="relative mx-auto rounded-xl border bg-card shadow-sm overflow-hidden"
-        style={{ width: "100%", maxWidth: bg.w, paddingBottom: isMobile ? 88 : 0 }}
+        style={{ width: "100%", maxWidth: bg.w, paddingBottom: isMobile ? 24 : 0 }}
+        onTouchStart={(e) => {
+          if (!isMobile) return;
+          if (e.touches.length >= 2) {
+            setPinching(true);
+            const c = fabricRef.current;
+            if (c) { c.selection = false; c.discardActiveObject(); c.requestRenderAll(); }
+          }
+        }}
+        onTouchEnd={(e) => {
+          if (!isMobile) return;
+          if (e.touches.length < 2 && pinching) {
+            setPinching(false);
+            const c = fabricRef.current;
+            if (c) c.selection = true;
+          }
+        }}
       >
         <div
           className="relative mx-auto"
-          style={{ width: displayW, height: displayH, cursor: tapMode ? "crosshair" : "default" }}
+          style={{ width: displayW, height: displayH, cursor: isMobile ? "crosshair" : "default" }}
         >
           <img
             src={bg.dataUrl} alt="Έγγραφο"
@@ -683,28 +691,105 @@ export function PdfEditor() {
         </div>
       </div>
 
-      {/* Mobile sticky bottom bar */}
+      {/* Mobile floating UI */}
       {isMobile && (
         <>
-          <div className="fixed bottom-0 inset-x-0 z-40 border-t bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80 px-2 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
-            <div className="grid grid-cols-4 gap-1">
-              <BottomBtn icon={<Type className="h-5 w-5" />} label="Κείμενο" active={tapMode} onClick={startTapMode} />
-              <BottomBtn icon={<User className="h-5 w-5" />} label="Στοιχεία" onClick={() => setQuickSheet(true)} />
-              <BottomBtn icon={<PenLine className="h-5 w-5" />} label="Υπογραφή" onClick={() => setSigSheet(true)} />
-              <BottomBtn icon={<Undo2 className="h-5 w-5" />} label="Αναίρεση" onClick={undo} />
+          {/* Hint pill (only when nothing yet) */}
+          {fabricRef.current && fabricRef.current.getObjects().length === 0 && !textSheet.open && (
+            <div className="fixed top-20 left-1/2 -translate-x-1/2 z-40 rounded-full bg-foreground/85 text-background text-xs px-3 py-1.5 shadow-md pointer-events-none">
+              Πάτα στο σημείο που θες να γράψεις
             </div>
-          </div>
+          )}
 
-          {/* Floating Export CTA */}
+          {/* Floating selection action bar */}
+          {selectedObj && !pinching && (
+            <div className="fixed left-1/2 -translate-x-1/2 z-50 flex items-center gap-1 rounded-full border bg-card shadow-xl px-1.5 py-1.5"
+              style={{ bottom: "calc(160px + env(safe-area-inset-bottom))" }}
+            >
+              {selectedObj.type === "i-text" && (
+                <button
+                  onClick={() => {
+                    const t = selectedObj as fabric.IText;
+                    setTextSheet({ open: true, value: t.text ?? "", pos: null, editing: t });
+                    setFontSize(Math.round(t.fontSize ?? fontSize));
+                  }}
+                  className="h-10 px-3 rounded-full text-sm font-medium hover:bg-accent flex items-center gap-1.5"
+                >
+                  <Type className="h-4 w-4" /> Επεξεργασία
+                </button>
+              )}
+              <button
+                onClick={() => setEditSheet({ open: true, target: selectedObj })}
+                className="h-10 w-10 rounded-full hover:bg-accent flex items-center justify-center"
+                aria-label="Μέγεθος"
+              >
+                <span className="text-base font-semibold">A↕</span>
+              </button>
+              <button
+                onClick={deleteSelected}
+                className="h-10 w-10 rounded-full hover:bg-destructive/10 text-destructive flex items-center justify-center"
+                aria-label="Διαγραφή"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+
+          {/* Floating Add Text FAB (bottom-left) */}
+          <button
+            onClick={openTextAtCenter}
+            className="fixed left-4 z-40 bg-primary text-primary-foreground rounded-full shadow-xl flex items-center gap-2 px-5 h-14 font-semibold"
+            style={{ bottom: "calc(20px + env(safe-area-inset-bottom))" }}
+          >
+            <Plus className="h-5 w-5" /> Κείμενο
+          </button>
+
+          {/* Floating "Στοιχεία μου" (bottom-left, above) */}
+          <button
+            onClick={() => setQuickSheet(true)}
+            className="fixed left-4 z-40 bg-card text-foreground border rounded-full shadow-md flex items-center gap-2 px-4 h-12 text-sm font-medium"
+            style={{ bottom: "calc(86px + env(safe-area-inset-bottom))" }}
+          >
+            <User className="h-4 w-4" /> Στοιχεία μου
+          </button>
+
+          {/* Signature small FAB */}
+          <button
+            onClick={() => setSigSheet(true)}
+            className="fixed left-4 z-40 bg-card text-foreground border rounded-full shadow-md flex items-center gap-2 px-4 h-12 text-sm font-medium"
+            style={{ bottom: "calc(146px + env(safe-area-inset-bottom))" }}
+          >
+            <PenLine className="h-4 w-4" /> Υπογραφή
+          </button>
+
+          {/* Undo top-right */}
+          <button
+            onClick={undo}
+            className="fixed right-4 top-20 z-40 h-11 w-11 rounded-full bg-card border shadow-md flex items-center justify-center"
+            aria-label="Αναίρεση"
+          >
+            <Undo2 className="h-5 w-5" />
+          </button>
+
+          {/* Floating Export CTA (bottom-right) */}
           <button
             onClick={exportPdf}
             disabled={phase === "exporting"}
-            className="fixed right-4 z-50 bg-primary text-primary-foreground rounded-full shadow-lg flex items-center gap-2 px-5 h-14 font-semibold disabled:opacity-60"
-            style={{ bottom: "calc(80px + env(safe-area-inset-bottom))" }}
+            className="fixed right-4 z-40 bg-primary text-primary-foreground rounded-full shadow-xl flex items-center gap-2 px-5 h-14 font-semibold disabled:opacity-60"
+            style={{ bottom: "calc(20px + env(safe-area-inset-bottom))" }}
           >
             {phase === "exporting" ? <Loader2 className="h-5 w-5 animate-spin" /> : <Download className="h-5 w-5" />}
-            Εξαγωγή PDF
+            PDF
           </button>
+
+          {/* Full-screen export overlay */}
+          {phase === "exporting" && (
+            <div className="fixed inset-0 z-[60] bg-background/95 flex flex-col items-center justify-center gap-3">
+              <Loader2 className="h-10 w-10 animate-spin text-primary" />
+              <div className="text-base font-semibold">Δημιουργία PDF…</div>
+              <div className="text-xs text-muted-foreground">Λίγα δευτερόλεπτα</div>
+            </div>
+          )}
         </>
       )}
 
