@@ -136,9 +136,9 @@ export const mockSubscribe = createServerFn({ method: "POST" })
 const SaveDocumentSchema = z.object({
   name: z.string().min(1).max(200),
   originalFilePath: z.string().min(1).max(500),
-  normalizedPdfPath: z.string().min(1).max(500),
+  normalizedPdfPath: z.string().max(500).optional().nullable(),
   filledFilePath: z.string().min(1).max(500),
-  fields: z.array(z.any()),
+  fields: z.array(z.any()).optional().default([]),
 });
 
 export const saveDocument = createServerFn({ method: "POST" })
@@ -156,9 +156,9 @@ export const saveDocument = createServerFn({ method: "POST" })
           user_id: userId,
           name: data.name,
           original_file_path: data.originalFilePath,
-          normalized_pdf_path: data.normalizedPdfPath,
+          normalized_pdf_path: data.normalizedPdfPath ?? null,
           filled_file_path: data.filledFilePath,
-          fields_json: data.fields,
+          fields_json: data.fields ?? [],
         })
         .select()
         .single();
@@ -224,10 +224,10 @@ export const listMyDocuments = createServerFn({ method: "GET" })
       logServerFnStep(fn, step, { userId });
       const { data, error } = await supabase
         .from("documents")
-        .select("id, name, created_at, filled_file_path")
+        .select("id, name, created_at, filled_file_path, original_file_path")
         .eq("user_id", userId)
         .order("created_at", { ascending: false })
-        .limit(100);
+        .limit(200);
       if (error) throw new Error(error.message);
       return { ok: true, data: data ?? [] };
     } catch (error) {
