@@ -145,11 +145,15 @@ export function PdfEditor() {
     return () => vv.removeEventListener("resize", onResize);
   }, []);
 
-  // Focus inline edit input WITHOUT scrolling
+  // Focus inline edit input WITHOUT scrolling (with small delay for mobile)
   useEffect(() => {
     if (editingId && editInputRef.current) {
-      try { editInputRef.current.focus({ preventScroll: true }); } catch { editInputRef.current.focus(); }
-      editInputRef.current.select();
+      const el = editInputRef.current;
+      const t = window.setTimeout(() => {
+        try { el.focus({ preventScroll: true }); } catch { el.focus(); }
+        el.select();
+      }, 50);
+      return () => window.clearTimeout(t);
     }
   }, [editingId]);
 
