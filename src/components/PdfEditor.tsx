@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
-import { useBlocker } from "@tanstack/react-router";
 import { PDFDocument, rgb } from "pdf-lib";
-import { Loader2, Upload, Download, Trash2, Minus, Plus, X, PenLine, ZoomIn, ZoomOut } from "lucide-react";
+import { Loader2, Upload, Download, Trash2, Minus, Plus, X, PenLine, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -113,14 +112,6 @@ export function PdfEditor() {
   const consume = useServerFn(consumeQuota);
   const save = useServerFn(saveDocument);
 
-  useBlocker({
-    shouldBlockFn: () => {
-      if (phase === "idle") return false;
-      if (typeof window === "undefined") return false;
-      return !window.confirm("Έχεις έγγραφο σε επεξεργασία. Έξοδος χωρίς εξαγωγή PDF;");
-    },
-    enableBeforeUnload: () => phase !== "idle" && phase !== "exporting",
-  });
 
   // Responsive base scale
   useEffect(() => {
@@ -152,7 +143,7 @@ export function PdfEditor() {
       const t = window.setTimeout(() => {
         try { el.focus({ preventScroll: true }); } catch { el.focus(); }
         el.select();
-      }, 50);
+      }, 80);
       return () => window.clearTimeout(t);
     }
   }, [editingId]);
@@ -215,12 +206,17 @@ export function PdfEditor() {
 
   const overlayRef = useRef<HTMLDivElement>(null);
 
-  const handleTap = (clientX: number, clientY: number, target: EventTarget | null) => {
-    if (editingId) return;
+  const handleTap = async (clientX: number, clientY: number, target: EventTarget | null) => {
     if (!bg || !overlayRef.current) return;
     if (pointersRef.current.size > 0) return;
-    const el = target as HTMLElement | null;
-    if (el?.closest("[data-text-item]") || el?.closest("[data-sig-item]")) return;
+    // If currently editing, commit the active input first then continue
+    if (editingId) {
+      const active = (typeof document !== "undefined" ? document.activeElement : null) as HTMLInputElement | null;
+      if (active && typeof active.blur === "function") active.blur();
+      await new Promise((r) => setTimeout(r, 60));
+    }
+    const hit = typeof document !== "undefined" ? document.elementFromPoint(clientX, clientY) as HTMLElement | null : (target as HTMLElement | null);
+    if (hit?.closest("[data-text-item]") || hit?.closest("[data-sig-item]")) return;
     const rect = overlayRef.current.getBoundingClientRect();
     const dW = bg.w * baseScale * zoom;
     const dH = bg.h * baseScale * zoom;
@@ -234,6 +230,14 @@ export function PdfEditor() {
     }]);
     setSelectedId(id);
     setEditingId(id);
+  };
+
+  const resetAll = () => {
+    setBg(null); setOriginalFile(null);
+    setItems([]); setSigs([]);
+    setSelectedId(null); setEditingId(null);
+    setZoom(1); setPhase("idle");
+    if (inputRef.current) inputRef.current.value = "";
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -478,7 +482,7 @@ export function PdfEditor() {
 
   return (
     <>
-      <div ref={wrapperRef} className="relative mx-auto min-h-[60vh]" style={{ width: "100%", paddingBottom: 96, touchAction: "pan-x pan-y" }}>
+      <div ref={wrapperRef} className="relative mx-auto" style={{ width: "100%", paddingBottom: 96, touchAction: "pan-x pan-y" }}>
         <div
           className="relative mx-auto rounded-xl border bg-white shadow-sm overflow-hidden select-none"
           style={{ width: displayW, height: displayH, maxWidth: "100%" }}
@@ -642,6 +646,17 @@ export function PdfEditor() {
             </button>
 
             <div className="flex-1" />
+
+            {/* New file */}
+            <button
+              onClick={resetAll}
+              className="h-[52px] px-3 rounded-xl border bg-background flex items-center justify-center gap-1.5"
+              aria-label="Νέο αρχείο"
+            >
+              <RefreshCw className="h-5 w-5" />
+              <span className="hidden sm:inline text-sm font-medium">Νέο</span>
+            </button>
+
 
             {/* Export */}
             <button
