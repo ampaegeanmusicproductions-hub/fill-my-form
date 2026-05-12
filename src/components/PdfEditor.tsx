@@ -346,6 +346,23 @@ export function PdfEditor() {
         ctx.fillText(it.text, it.xPct * bg.w, it.yPct * bg.h);
       }
 
+      // AI field values
+      for (const f of aiFields) {
+        if (!f.value.trim()) continue;
+        const h = Math.max(20, f.heightPct * bg.h);
+        const fontPx = Math.max(12, h * 0.65);
+        ctx.font = `${fontPx}px ${FONT}`;
+        ctx.fillStyle = "#0a3a8c";
+        if (f.type === "multiline") {
+          const lines = f.value.split("\n");
+          lines.forEach((line, i) => {
+            ctx.fillText(line, f.xPct * bg.w, f.yPct * bg.h + i * fontPx * 1.2);
+          });
+        } else {
+          ctx.fillText(f.value, f.xPct * bg.w, f.yPct * bg.h);
+        }
+      }
+
       for (const s of sigs) {
         try {
           const sImg = await loadImg(s.dataUrl);
