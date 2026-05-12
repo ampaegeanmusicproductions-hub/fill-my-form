@@ -112,14 +112,6 @@ export function PdfEditor() {
   const consume = useServerFn(consumeQuota);
   const save = useServerFn(saveDocument);
 
-  useBlocker({
-    shouldBlockFn: () => {
-      if (phase === "idle") return false;
-      if (typeof window === "undefined") return false;
-      return !window.confirm("Έχεις έγγραφο σε επεξεργασία. Έξοδος χωρίς εξαγωγή PDF;");
-    },
-    enableBeforeUnload: () => phase !== "idle" && phase !== "exporting",
-  });
 
   // Responsive base scale
   useEffect(() => {
