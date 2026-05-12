@@ -344,12 +344,16 @@ export function PdfEditor() {
     const x = pos?.x ?? c.getWidth() / 2;
     const y = pos?.y ?? c.getHeight() / 2;
     const t = new fabric.IText(text || "Γράψε εδώ", {
-      left: x, top: y - size / 2, originX: "left", originY: "top",
+      left: x, top: y, originX: "center", originY: "center",
       fontSize: size, fill: color,
       fontFamily: "Manrope, Arial, sans-serif",
       editable: true,
       backgroundColor: "rgba(255,255,255,0.95)",
       padding: 4,
+      hasControls: !isMobile,
+      lockRotation: isMobile,
+      lockScalingX: isMobile,
+      lockScalingY: isMobile,
     });
     c.add(t); c.setActiveObject(t); c.requestRenderAll();
   };
