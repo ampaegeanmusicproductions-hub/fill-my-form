@@ -937,16 +937,3 @@ export function PdfEditor() {
   );
 }
 
-function BottomBtn({ icon, label, onClick, active }: { icon: React.ReactNode; label: string; onClick: () => void; active?: boolean }) {
-  return (
-    <button
-      onClick={onClick}
-      className={`flex flex-col items-center justify-center gap-1 py-2 rounded-lg text-xs font-medium transition-colors ${
-        active ? "bg-primary text-primary-foreground" : "text-foreground hover:bg-accent active:bg-accent/80"
-      }`}
-    >
-      {icon}
-      <span>{label}</span>
-    </button>
-  );
-}
