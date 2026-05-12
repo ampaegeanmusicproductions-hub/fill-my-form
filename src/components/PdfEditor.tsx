@@ -159,7 +159,7 @@ export function PdfEditor() {
     const load = async (uid: string) => {
       const { data } = await supabase.from("profiles").select("*").eq("id", uid).maybeSingle();
       if (!data || !alive) return;
-      const p = data as Record<string, string | null>;
+      const p = data as unknown as Record<string, string | null>;
       const addr = [p.address_street, p.address_number].filter(Boolean).join(" ");
       setProfileChips([
         { label: "Ονοματεπώνυμο", value: p.full_name ?? "" },
