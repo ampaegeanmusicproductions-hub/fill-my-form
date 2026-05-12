@@ -403,10 +403,8 @@ export function PdfEditor() {
     if (a) { c.remove(a); c.discardActiveObject(); c.requestRenderAll(); }
   };
 
-  const startTapMode = () => {
-    tapModeRef.current = true;
-    setTapMode(true);
-    toast.message("Πάτα στο σημείο του εγγράφου για να γράψεις.");
+  const openTextAtCenter = () => {
+    setTextSheet({ open: true, value: "", pos: null, editing: null });
   };
 
   const handleQuickInsert = (label: string, value: string) => {
