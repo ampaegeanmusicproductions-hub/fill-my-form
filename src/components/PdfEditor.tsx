@@ -143,7 +143,7 @@ export function PdfEditor() {
       const t = window.setTimeout(() => {
         try { el.focus({ preventScroll: true }); } catch { el.focus(); }
         el.select();
-      }, 50);
+      }, 80);
       return () => window.clearTimeout(t);
     }
   }, [editingId]);
