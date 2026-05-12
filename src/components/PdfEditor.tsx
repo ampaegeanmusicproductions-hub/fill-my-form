@@ -226,8 +226,10 @@ export function PdfEditor() {
     if (Date.now() - start.t > 600) return;
 
     const rect = e.currentTarget.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width;
-    const y = (e.clientY - rect.top) / rect.height;
+    const dW = bg!.w * baseScale * zoom;
+    const dH = bg!.h * baseScale * zoom;
+    const x = (e.clientX - rect.left) / dW;
+    const y = (e.clientY - rect.top) / dH;
     const id = uid();
     setItems((prev) => [...prev, {
       id, xPercent: Math.max(0, Math.min(1, x)), yPercent: Math.max(0, Math.min(1, y)),
@@ -578,13 +580,13 @@ export function PdfEditor() {
             </div>
 
             {/* Zoom */}
-            <div className="hidden sm:flex h-[52px] items-center rounded-xl border bg-background overflow-hidden">
-              <button onClick={() => setZoom((z) => Math.max(0.5, z * 0.9))} className="h-full w-10 flex items-center justify-center" aria-label="Σμίκρυνση">
-                <ZoomOut className="h-4 w-4" />
+            <div className="flex h-[52px] items-center rounded-xl border bg-background overflow-hidden">
+              <button onClick={() => setZoom((z) => Math.max(0.5, Math.round((z - 0.1) * 10) / 10))} className="h-full w-10 flex items-center justify-center" aria-label="Σμίκρυνση">
+                <Minus className="h-4 w-4" />
               </button>
-              <span className="px-1 text-xs tabular-nums min-w-[40px] text-center">{Math.round(zoom * 100)}%</span>
-              <button onClick={() => setZoom((z) => Math.min(3, z * 1.1))} className="h-full w-10 flex items-center justify-center" aria-label="Μεγέθυνση">
-                <ZoomIn className="h-4 w-4" />
+              <span className="px-1 text-xs tabular-nums min-w-[44px] text-center">{Math.round(zoom * 100)}%</span>
+              <button onClick={() => setZoom((z) => Math.min(3, Math.round((z + 0.1) * 10) / 10))} className="h-full w-10 flex items-center justify-center" aria-label="Μεγέθυνση">
+                <Plus className="h-4 w-4" />
               </button>
             </div>
 
