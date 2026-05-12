@@ -1,37 +1,39 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { useBlocker } from "@tanstack/react-router";
 import { PDFDocument, rgb } from "pdf-lib";
-import { Loader2, Upload, Download, Trash2, Plus, Minus, X, User, PenLine } from "lucide-react";
+import { Loader2, Upload, Download, Trash2, Minus, Plus, X, PenLine, ZoomIn, ZoomOut } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { supabase } from "@/integrations/supabase/client";
 import { consumeQuota, saveDocument } from "@/lib/quota.functions";
 import { unwrapServerFn } from "@/lib/server-fn-client";
 import { UpgradeModal } from "@/components/UpgradeModal";
 import { SignaturePad } from "@/components/SignaturePad";
+import { CropPreview } from "@/components/CropPreview";
 
-type Phase = "idle" | "preparing" | "cropping" | "ready" | "exporting";
+type Phase = "idle" | "preparing" | "ready" | "exporting";
 type TextItem = {
   id: string;
-  xPercent: number; // 0..1 (top-left of text box, in document coords)
+  xPercent: number;
   yPercent: number;
   text: string;
-  fontSize: number; // px relative to natural document width
+  fontSize: number;
   color: string;
 };
 type SigItem = {
   id: string;
   xPercent: number;
   yPercent: number;
-  widthPercent: number; // width relative to document width
+  widthPercent: number;
   dataUrl: string;
 };
 
 const ACCEPTED = ".pdf,.jpg,.jpeg,.png,.webp,.heic,.heif";
 const MAX_W = 1400;
-const QUICK_LABELS = ["Ονοματεπώνυμο", "ΑΦΜ", "ΑΔΤ", "Διεύθυνση", "Τηλέφωνο", "Ημερομηνία"] as const;
+const FONT_FAMILY = "Manrope, Arial, sans-serif";
 
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -83,14 +85,7 @@ async function renderToImage(file: File): Promise<{ dataUrl: string; w: number; 
 const sanitize = (s: string) =>
   s.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "file";
 
-const todayGr = () => {
-  const d = new Date();
-  return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
-};
-
 const uid = () => Math.random().toString(36).slice(2, 10);
-
-const FONT_FAMILY = "Manrope, Arial, sans-serif";
 
 export function PdfEditor() {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -99,9 +94,9 @@ export function PdfEditor() {
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [bg, setBg] = useState<{ dataUrl: string; w: number; h: number } | null>(null);
-  const [originalBg, setOriginalBg] = useState<{ dataUrl: string; w: number; h: number } | null>(null);
   const [originalFile, setOriginalFile] = useState<File | null>(null);
-  const [scale, setScale] = useState(1);
+  const [baseScale, setBaseScale] = useState(1);
+  const [zoom, setZoom] = useState(1);
 
   const [items, setItems] = useState<TextItem[]>([]);
   const [sigs, setSigs] = useState<SigItem[]>([]);
@@ -111,13 +106,12 @@ export function PdfEditor() {
   const [keyboardOpen, setKeyboardOpen] = useState(false);
 
   const [upgradeOpen, setUpgradeOpen] = useState(false);
-  const [quickSheet, setQuickSheet] = useState(false);
   const [sigSheet, setSigSheet] = useState(false);
-  const [crop, setCrop] = useState({ top: 0, right: 0, bottom: 0, left: 0 });
+  const [cropOpen, setCropOpen] = useState(false);
+  const cropTimerRef = useRef<number | null>(null);
 
   const consume = useServerFn(consumeQuota);
   const save = useServerFn(saveDocument);
-  const [chips, setChips] = useState<{ label: string; value: string }[]>([]);
 
   useBlocker({
     shouldBlockFn: () => {
@@ -128,85 +122,49 @@ export function PdfEditor() {
     enableBeforeUnload: () => phase !== "idle" && phase !== "exporting",
   });
 
-  // Profile chips (logged in)
-  useEffect(() => {
-    let cancelled = false;
-    const loadProfileFor = async (userId: string) => {
-      try {
-        const { data: profile, error } = await supabase.from("profiles").select("*").eq("id", userId).maybeSingle();
-        if (error || !profile || cancelled) return;
-        const prof = profile as unknown as Record<string, string | null>;
-        const fullAddress = [prof.address_street, prof.address_number].filter(Boolean).join(" ").trim();
-        const items: { label: string; value: string }[] = [
-          { label: "Ονοματεπώνυμο", value: prof.full_name ?? "" },
-          { label: "ΑΦΜ", value: prof.afm ?? "" },
-          { label: "ΑΔΤ", value: prof.id_number ?? "" },
-          { label: "Τηλέφωνο", value: prof.phone ?? "" },
-          { label: "Διεύθυνση", value: fullAddress },
-        ].filter((c) => c.value.trim().length > 0);
-        setChips(items);
-      } catch { /* ignore */ }
-    };
-    supabase.auth.getSession().then(({ data }) => {
-      if (cancelled) return;
-      if (data.session?.user) loadProfileFor(data.session.user.id);
-    }).catch(() => {});
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
-      if (cancelled) return;
-      if (session?.user) loadProfileFor(session.user.id);
-      else setChips([]);
-    });
-    return () => { cancelled = true; sub.subscription.unsubscribe(); };
-  }, []);
-
-  // Responsive scale
+  // Responsive base scale
   useEffect(() => {
     if (!bg) return;
     const update = () => {
       const w = wrapperRef.current?.clientWidth ?? bg.w;
       const reserved = 220;
       const maxH = Math.max(360, window.innerHeight - reserved);
-      setScale(Math.min(1, w / bg.w, maxH / bg.h));
+      setBaseScale(Math.min(1, w / bg.w, maxH / bg.h));
     };
     update();
     window.addEventListener("resize", update);
     return () => window.removeEventListener("resize", update);
   }, [bg]);
 
-  // Detect mobile keyboard via visualViewport (hide bottom toolbar when open)
+  // Visual viewport / keyboard detection
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
-    const onResize = () => {
-      const diff = window.innerHeight - vv.height;
-      setKeyboardOpen(diff > 150);
-    };
+    const onResize = () => setKeyboardOpen(window.innerHeight - vv.height > 150);
     vv.addEventListener("resize", onResize);
     return () => vv.removeEventListener("resize", onResize);
   }, []);
 
-  // Focus the inline edit input when editing starts
+  // Focus inline edit input WITHOUT scrolling
   useEffect(() => {
     if (editingId && editInputRef.current) {
-      editInputRef.current.focus();
+      try { editInputRef.current.focus({ preventScroll: true }); } catch { editInputRef.current.focus(); }
       editInputRef.current.select();
     }
   }, [editingId]);
 
   const handleFile = useCallback(async (file: File) => {
-    setOriginalFile(file); setBg(null); setOriginalBg(null); setItems([]); setSigs([]);
+    setOriginalFile(file); setBg(null); setItems([]); setSigs([]); setZoom(1);
     const lower = file.name.toLowerCase();
     if (lower.endsWith(".docx") || lower.endsWith(".doc")) {
       toast.info("Word: σύντομα διαθέσιμο. Δοκίμασε PDF ή φωτογραφία προς το παρόν.");
       setOriginalFile(null); return;
     }
     setPhase("preparing");
-    const isPdf = lower.endsWith(".pdf") || file.type === "application/pdf";
     try {
       const out = await renderToImage(file);
-      setOriginalBg(out);
-      if (isPdf) { setBg(out); setPhase("ready"); }
-      else { setCrop({ top: 0, right: 0, bottom: 0, left: 0 }); setPhase("cropping"); }
+      setBg(out);
+      setPhase("ready");
     } catch (e) {
       console.error(e);
       toast.error(e instanceof Error ? e.message : "Σφάλμα κατά τη φόρτωση.");
@@ -222,58 +180,81 @@ export function PdfEditor() {
     const f = e.dataTransfer.files?.[0]; if (f) void handleFile(f);
   };
 
-  const applyCrop = async () => {
-    if (!originalBg) return;
-    const { top, right, bottom, left } = crop;
-    if (top + bottom + left + right === 0) {
-      setBg(originalBg); setPhase("ready"); return;
-    }
-    try {
-      const img = await loadImage(originalBg.dataUrl);
-      const w = Math.max(1, originalBg.w - left - right);
-      const h = Math.max(1, originalBg.h - top - bottom);
-      const c = document.createElement("canvas");
-      c.width = w; c.height = h;
-      c.getContext("2d")!.drawImage(img, left, top, w, h, 0, 0, w, h);
-      setBg({ dataUrl: c.toDataURL("image/jpeg", 0.92), w, h });
-      setPhase("ready");
-    } catch {
-      setBg(originalBg); setPhase("ready");
+  // ---- Pinch & Ctrl+wheel zoom ----
+  const pointersRef = useRef(new Map<number, { x: number; y: number }>());
+  const pinchRef = useRef<{ startDist: number; startZoom: number } | null>(null);
+  const tapStartRef = useRef<{ x: number; y: number; t: number } | null>(null);
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointersRef.current.size === 1) {
+      tapStartRef.current = { x: e.clientX, y: e.clientY, t: Date.now() };
+    } else if (pointersRef.current.size === 2) {
+      const pts = Array.from(pointersRef.current.values());
+      const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      pinchRef.current = { startDist: dist, startZoom: zoom };
+      tapStartRef.current = null;
     }
   };
 
-  // Place text at click position on overlay
-  const onOverlayPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (editingId) return; // currently editing → ignore
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!pointersRef.current.has(e.pointerId)) return;
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointersRef.current.size >= 2 && pinchRef.current) {
+      const pts = Array.from(pointersRef.current.values());
+      const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      const ratio = dist / pinchRef.current.startDist;
+      const next = Math.max(0.5, Math.min(3, pinchRef.current.startZoom * ratio));
+      setZoom(next);
+    }
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    const wasMulti = pointersRef.current.size >= 2;
+    pointersRef.current.delete(e.pointerId);
+    if (pointersRef.current.size < 2) pinchRef.current = null;
+    if (wasMulti) { tapStartRef.current = null; return; }
+
+    // Single-tap → create text at tap position
+    if (editingId) return;
     const target = e.target as HTMLElement;
     if (target.closest("[data-text-item]") || target.closest("[data-sig-item]")) return;
+    const start = tapStartRef.current;
+    tapStartRef.current = null;
+    if (!start) return;
+    if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > 10) return;
+    if (Date.now() - start.t > 600) return;
+
     const rect = e.currentTarget.getBoundingClientRect();
     const x = (e.clientX - rect.left) / rect.width;
     const y = (e.clientY - rect.top) / rect.height;
     const id = uid();
-    const newItem: TextItem = {
+    setItems((prev) => [...prev, {
       id, xPercent: Math.max(0, Math.min(1, x)), yPercent: Math.max(0, Math.min(1, y)),
       text: "", fontSize: defaultFontSize, color: "#000000",
-    };
-    setItems((prev) => [...prev, newItem]);
+    }]);
     setSelectedId(id);
     setEditingId(id);
   };
+
+  // Ctrl+wheel zoom (desktop)
+  useEffect(() => {
+    const el = wrapperRef.current;
+    if (!el) return;
+    const onWheel = (ev: WheelEvent) => {
+      if (!ev.ctrlKey && !ev.metaKey) return;
+      ev.preventDefault();
+      setZoom((z) => Math.max(0.5, Math.min(3, z * (ev.deltaY < 0 ? 1.1 : 0.9))));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [bg]);
 
   const commitEdit = (id: string, text: string) => {
-    setItems((prev) => {
-      const next = prev.map((it) => (it.id === id ? { ...it, text } : it));
-      // remove if empty
-      return next.filter((it) => it.id !== id || it.text.trim().length > 0);
-    });
+    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, text } : it)).filter((it) => it.id !== id || it.text.trim().length > 0));
     setEditingId(null);
   };
-
-  const beginEdit = (id: string) => {
-    setSelectedId(id);
-    setEditingId(id);
-  };
-
+  const beginEdit = (id: string) => { setSelectedId(id); setEditingId(id); };
   const removeItem = (id: string) => {
     setItems((prev) => prev.filter((it) => it.id !== id));
     if (selectedId === id) setSelectedId(null);
@@ -285,35 +266,8 @@ export function PdfEditor() {
   };
 
   const adjustSize = (delta: number) => {
-    if (!selectedId) {
-      setDefaultFontSize((s) => Math.max(8, Math.min(80, s + delta)));
-      return;
-    }
+    if (!selectedId) { setDefaultFontSize((s) => Math.max(8, Math.min(80, s + delta))); return; }
     setItems((prev) => prev.map((it) => it.id === selectedId ? { ...it, fontSize: Math.max(8, Math.min(80, it.fontSize + delta)) } : it));
-  };
-
-  // Long-press handling for delete shortcut
-  const longPressRef = useRef<{ id: string; timer: number } | null>(null);
-  const startLongPress = (id: string) => {
-    if (longPressRef.current) window.clearTimeout(longPressRef.current.timer);
-    const timer = window.setTimeout(() => {
-      setSelectedId(id);
-      // Triggering removal directly might be too aggressive; just select & user uses bottom Delete
-      // But user asked: long press → emit delete button. We'll just mark selected.
-    }, 500);
-    longPressRef.current = { id, timer };
-  };
-  const cancelLongPress = () => {
-    if (longPressRef.current) { window.clearTimeout(longPressRef.current.timer); longPressRef.current = null; }
-  };
-
-  const insertQuick = (label: string, value: string) => {
-    setQuickSheet(false);
-    const text = label === "Ημερομηνία" && !value ? todayGr() : value;
-    if (!text) return;
-    const id = uid();
-    setItems((prev) => [...prev, { id, xPercent: 0.1, yPercent: 0.1, text, fontSize: defaultFontSize, color: "#000000" }]);
-    setSelectedId(id);
   };
 
   const addSignature = (dataUrl: string) => {
@@ -323,9 +277,33 @@ export function PdfEditor() {
     setSelectedId(id);
   };
 
-  // Build composite image (bg + text + sigs) and embed in PDF
-  const exportPdf = async () => {
-    if (!bg || !originalFile) return;
+  // ---- Crop-before-export flow ----
+  const startExportFlow = () => {
+    if (!bg || phase === "exporting") return;
+    setCropOpen(true);
+    if (cropTimerRef.current) window.clearTimeout(cropTimerRef.current);
+    cropTimerRef.current = window.setTimeout(() => {
+      setCropOpen(false);
+      void doExport(bg);
+    }, 3000);
+  };
+  const cancelCropTimer = () => {
+    if (cropTimerRef.current) { window.clearTimeout(cropTimerRef.current); cropTimerRef.current = null; }
+  };
+  const onCropConfirm = (out: { dataUrl: string; w: number; h: number }) => {
+    cancelCropTimer();
+    setBg(out);
+    setCropOpen(false);
+    void doExport(out);
+  };
+  const onCropSkip = () => {
+    cancelCropTimer();
+    setCropOpen(false);
+    if (bg) void doExport(bg);
+  };
+
+  const doExport = async (bgArg: { dataUrl: string; w: number; h: number }) => {
+    if (!originalFile) return;
     setPhase("exporting");
     let step = "init";
     try {
@@ -345,32 +323,29 @@ export function PdfEditor() {
       }
 
       step = "Σύνθεση εικόνας";
-      const baseImg = await loadImage(bg.dataUrl);
+      const baseImg = await loadImage(bgArg.dataUrl);
       const out = document.createElement("canvas");
-      out.width = bg.w; out.height = bg.h;
+      out.width = bgArg.w; out.height = bgArg.h;
       const octx = out.getContext("2d");
       if (!octx) throw new Error("Αδυναμία επεξεργασίας εικόνας.");
       octx.fillStyle = "#ffffff";
-      octx.fillRect(0, 0, bg.w, bg.h);
-      octx.drawImage(baseImg, 0, 0, bg.w, bg.h);
+      octx.fillRect(0, 0, bgArg.w, bgArg.h);
+      octx.drawImage(baseImg, 0, 0, bgArg.w, bgArg.h);
 
-      // Draw text items
       octx.textBaseline = "top";
       for (const it of items) {
         const text = it.text.trim();
         if (!text) continue;
         octx.font = `${it.fontSize}px ${FONT_FAMILY}`;
         octx.fillStyle = it.color;
-        octx.fillText(text, it.xPercent * bg.w, it.yPercent * bg.h);
+        octx.fillText(text, it.xPercent * bgArg.w, it.yPercent * bgArg.h);
       }
-
-      // Draw signatures
       for (const s of sigs) {
         try {
           const sigImg = await loadImage(s.dataUrl);
-          const w = s.widthPercent * bg.w;
+          const w = s.widthPercent * bgArg.w;
           const h = (sigImg.naturalHeight / sigImg.naturalWidth) * w;
-          octx.drawImage(sigImg, s.xPercent * bg.w, s.yPercent * bg.h, w, h);
+          octx.drawImage(sigImg, s.xPercent * bgArg.w, s.yPercent * bgArg.h, w, h);
         } catch {}
       }
 
@@ -378,13 +353,13 @@ export function PdfEditor() {
       const finalDataUrl = out.toDataURL("image/jpeg", 0.95);
       const finalBytes = await (await fetch(finalDataUrl)).arrayBuffer();
       const A4 = { w: 595, h: 842 };
-      const landscape = bg.w > bg.h;
+      const landscape = bgArg.w > bgArg.h;
       const pageW = landscape ? A4.h : A4.w;
       const pageH = landscape ? A4.w : A4.h;
       const margin = 18;
-      const fit = Math.min((pageW - margin * 2) / bg.w, (pageH - margin * 2) / bg.h);
-      const drawW = bg.w * fit;
-      const drawH = bg.h * fit;
+      const fit = Math.min((pageW - margin * 2) / bgArg.w, (pageH - margin * 2) / bgArg.h);
+      const drawW = bgArg.w * fit;
+      const drawH = bgArg.h * fit;
       const px = (pageW - drawW) / 2;
       const py = (pageH - drawH) / 2;
       const pdfDoc = await PDFDocument.create();
@@ -406,10 +381,10 @@ export function PdfEditor() {
           const filledPath = `${folder}/filled.pdf`;
           const normalizedPath = `${folder}/normalized.pdf`;
           const normDoc = await PDFDocument.create();
-          const normBytes = await (await fetch(bg.dataUrl)).arrayBuffer();
+          const normBytes = await (await fetch(bgArg.dataUrl)).arrayBuffer();
           const normJpg = await normDoc.embedJpg(normBytes);
-          const np = normDoc.addPage([bg.w, bg.h]);
-          np.drawImage(normJpg, { x: 0, y: 0, width: bg.w, height: bg.h });
+          const np = normDoc.addPage([bgArg.w, bgArg.h]);
+          np.drawImage(normJpg, { x: 0, y: 0, width: bgArg.w, height: bgArg.h });
           const normalizedBlob = new Blob([new Uint8Array(await normDoc.save())], { type: "application/pdf" });
           await Promise.all([
             supabase.storage.from("originals").upload(originalPath, originalFile, { upsert: true }),
@@ -441,47 +416,12 @@ export function PdfEditor() {
     } finally { setPhase("ready"); }
   };
 
-  const quickItems = useMemo(() => {
-    const map = new Map(chips.map((c) => [c.label, c.value]));
-    return QUICK_LABELS.map((label) => ({ label, value: map.get(label) ?? "" }));
-  }, [chips]);
-
   // ============= RENDER =============
-  if (phase === "cropping" && originalBg) {
-    return (
-      <div className="space-y-4">
-        <div className="rounded-xl border bg-card p-3">
-          <p className="text-sm font-medium mb-1">Περικοπή (προαιρετικά)</p>
-          <p className="text-xs text-muted-foreground mb-3">Ορίσε πόσα pixel να αφαιρεθούν από κάθε πλευρά. Άφησε στο 0 για παράλειψη.</p>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            {(["top", "right", "bottom", "left"] as const).map((side) => (
-              <label key={side} className="flex flex-col gap-1">
-                <span className="text-xs text-muted-foreground">
-                  {side === "top" ? "Πάνω" : side === "right" ? "Δεξιά" : side === "bottom" ? "Κάτω" : "Αριστερά"}
-                </span>
-                <input
-                  type="number" min={0} value={crop[side]}
-                  onChange={(e) => setCrop((c) => ({ ...c, [side]: Math.max(0, Number(e.target.value) || 0) }))}
-                  className="h-10 rounded-md border px-3 text-sm"
-                />
-              </label>
-            ))}
-          </div>
-          <div className="flex gap-2 mt-3">
-            <Button variant="outline" onClick={() => { setBg(originalBg); setPhase("ready"); }}>Παράλειψη</Button>
-            <Button onClick={applyCrop}>Εφαρμογή & Συνέχεια</Button>
-          </div>
-        </div>
-        <img src={originalBg.dataUrl} alt="" className="mx-auto rounded-xl border max-w-full" />
-      </div>
-    );
-  }
-
   if (!bg) {
     return (
       <div
         onDragOver={(e) => e.preventDefault()} onDrop={onDrop}
-        className="border-2 border-dashed rounded-2xl p-12 sm:p-20 text-center bg-card hover:border-primary transition cursor-pointer"
+        className="border-2 border-dashed rounded-2xl p-12 sm:p-20 text-center bg-card hover:border-primary transition cursor-pointer min-h-[60vh] flex items-center justify-center"
         onClick={() => inputRef.current?.click()} role="button" tabIndex={0}
       >
         <input ref={inputRef} type="file" accept={ACCEPTED} className="hidden" onChange={onPickFile} />
@@ -505,40 +445,42 @@ export function PdfEditor() {
     );
   }
 
-  const displayW = bg.w * scale;
-  const displayH = bg.h * scale;
+  const effectiveScale = baseScale * zoom;
+  const displayW = bg.w * effectiveScale;
+  const displayH = bg.h * effectiveScale;
 
   return (
     <>
-      <div ref={wrapperRef} className="relative mx-auto" style={{ width: "100%", maxWidth: bg.w, paddingBottom: 96 }}>
+      <div ref={wrapperRef} className="relative mx-auto min-h-[60vh]" style={{ width: "100%", paddingBottom: 96, touchAction: "pan-x pan-y" }}>
         <div
           className="relative mx-auto rounded-xl border bg-white shadow-sm overflow-hidden select-none"
-          style={{ width: displayW, height: displayH }}
+          style={{ width: displayW, height: displayH, maxWidth: "100%" }}
         >
           <img src={bg.dataUrl} alt="Έγγραφο" draggable={false} className="absolute inset-0 pointer-events-none" style={{ width: displayW, height: displayH }} />
 
           {/* Tap overlay */}
           <div
             className="absolute inset-0"
-            style={{ touchAction: "manipulation" }}
-            onPointerDown={onOverlayPointerDown}
+            style={{ touchAction: "manipulation", cursor: "text", zIndex: 10 }}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={(e) => { pointersRef.current.delete(e.pointerId); pinchRef.current = null; tapStartRef.current = null; }}
           >
             {items.map((it) => {
               const isEditing = editingId === it.id;
               const isSelected = selectedId === it.id;
               const left = it.xPercent * displayW;
               const top = it.yPercent * displayH;
-              const fontPx = it.fontSize * scale;
+              const fontPx = it.fontSize * effectiveScale;
               return (
                 <div
                   key={it.id}
                   data-text-item
                   className={`absolute ${isSelected && !isEditing ? "ring-2 ring-primary ring-offset-1" : ""}`}
                   style={{ left, top, fontSize: fontPx, fontFamily: FONT_FAMILY, color: it.color, lineHeight: 1.1 }}
-                  onPointerDown={(e) => { e.stopPropagation(); startLongPress(it.id); setSelectedId(it.id); }}
-                  onPointerUp={(e) => { e.stopPropagation(); cancelLongPress(); if (!isEditing) beginEdit(it.id); }}
-                  onPointerCancel={cancelLongPress}
-                  onPointerLeave={cancelLongPress}
+                  onPointerDown={(e) => { e.stopPropagation(); setSelectedId(it.id); }}
+                  onPointerUp={(e) => { e.stopPropagation(); if (!isEditing) beginEdit(it.id); }}
                 >
                   {isEditing ? (
                     <input
@@ -555,7 +497,7 @@ export function PdfEditor() {
                       onClick={(e) => e.stopPropagation()}
                       style={{
                         fontSize: fontPx, fontFamily: FONT_FAMILY, color: it.color,
-                        background: "rgba(255,255,255,0.95)", border: "1px solid hsl(var(--primary))",
+                        background: "rgba(255,255,255,0.85)", border: "1px solid hsl(var(--primary))",
                         outline: "none", padding: "2px 6px", borderRadius: 4, minWidth: 80,
                         lineHeight: 1.1,
                       }}
@@ -567,7 +509,7 @@ export function PdfEditor() {
                   )}
                   {isSelected && !isEditing && (
                     <button
-                      onPointerDown={(e) => { e.stopPropagation(); }}
+                      onPointerDown={(e) => e.stopPropagation()}
                       onClick={(e) => { e.stopPropagation(); removeItem(it.id); }}
                       className="absolute -top-3 -right-3 h-7 w-7 rounded-full bg-destructive text-destructive-foreground shadow-md flex items-center justify-center"
                       aria-label="Διαγραφή"
@@ -608,26 +550,9 @@ export function PdfEditor() {
           </div>
         </div>
 
-        {/* Hint */}
         {items.length === 0 && sigs.length === 0 && (
           <div className="mt-3 text-center text-xs text-muted-foreground">
             Πάτα οπουδήποτε στο έγγραφο για να γράψεις.
-          </div>
-        )}
-
-        {/* Profile chips (desktop helper) */}
-        {chips.length > 0 && (
-          <div className="mt-3 flex flex-wrap items-center gap-1">
-            <span className="text-xs text-muted-foreground">Γρήγορη συμπλήρωση:</span>
-            {chips.map((ch) => (
-              <button
-                key={ch.label} type="button"
-                onClick={() => insertQuick(ch.label, ch.value)}
-                className="inline-flex items-center rounded-full border bg-secondary/60 hover:bg-secondary text-secondary-foreground px-2.5 py-1 text-xs"
-              >
-                {ch.label}
-              </button>
-            ))}
           </div>
         )}
       </div>
@@ -639,68 +564,90 @@ export function PdfEditor() {
           style={{ bottom: 0, paddingBottom: "env(safe-area-inset-bottom)" }}
         >
           <div className="mx-auto max-w-3xl px-3 py-2 flex items-center gap-2">
-            <button
-              onClick={() => {
-                // Add a centered text and immediately edit
-                const id = uid();
-                setItems((prev) => [...prev, { id, xPercent: 0.1, yPercent: 0.1, text: "", fontSize: defaultFontSize, color: "#000000" }]);
-                setSelectedId(id); setEditingId(id);
-              }}
-              className="flex-1 min-w-0 h-[52px] rounded-xl bg-primary text-primary-foreground font-semibold flex items-center justify-center gap-1.5"
-            >
-              <Plus className="h-5 w-5" /> <span className="truncate">Κείμενο</span>
-            </button>
-            <button
-              onClick={() => setQuickSheet(true)}
-              className="h-[52px] px-3 rounded-xl border bg-background flex items-center justify-center"
-              aria-label="Στοιχεία"
-            >
-              <User className="h-5 w-5" />
-            </button>
-            <button
-              onClick={() => setSigSheet(true)}
-              className="h-[52px] px-3 rounded-xl border bg-background flex items-center justify-center"
-              aria-label="Υπογραφή"
-            >
-              <PenLine className="h-5 w-5" />
-            </button>
+            {/* Font size */}
             <div className="h-[52px] flex items-center rounded-xl border bg-background overflow-hidden">
-              <button onClick={() => adjustSize(-2)} className="h-full w-10 flex items-center justify-center" aria-label="Μικρότερο">
+              <button onClick={() => adjustSize(-2)} className="h-full w-10 flex items-center justify-center" aria-label="Μικρότερο κείμενο">
                 <Minus className="h-4 w-4" />
               </button>
-              <span className="px-1 text-xs tabular-nums">
+              <span className="px-1 text-xs tabular-nums min-w-[28px] text-center">
                 {selectedId ? items.find((i) => i.id === selectedId)?.fontSize ?? defaultFontSize : defaultFontSize}
               </span>
-              <button onClick={() => adjustSize(+2)} className="h-full w-10 flex items-center justify-center" aria-label="Μεγαλύτερο">
+              <button onClick={() => adjustSize(+2)} className="h-full w-10 flex items-center justify-center" aria-label="Μεγαλύτερο κείμενο">
                 <Plus className="h-4 w-4" />
               </button>
             </div>
+
+            {/* Zoom */}
+            <div className="hidden sm:flex h-[52px] items-center rounded-xl border bg-background overflow-hidden">
+              <button onClick={() => setZoom((z) => Math.max(0.5, z * 0.9))} className="h-full w-10 flex items-center justify-center" aria-label="Σμίκρυνση">
+                <ZoomOut className="h-4 w-4" />
+              </button>
+              <span className="px-1 text-xs tabular-nums min-w-[40px] text-center">{Math.round(zoom * 100)}%</span>
+              <button onClick={() => setZoom((z) => Math.min(3, z * 1.1))} className="h-full w-10 flex items-center justify-center" aria-label="Μεγέθυνση">
+                <ZoomIn className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Delete selected */}
             <button
               onClick={() => {
-                if (selectedId) {
-                  if (items.find((i) => i.id === selectedId)) removeItem(selectedId);
-                  else if (sigs.find((s) => s.id === selectedId)) removeSig(selectedId);
-                }
+                if (!selectedId) return;
+                if (items.find((i) => i.id === selectedId)) removeItem(selectedId);
+                else if (sigs.find((s) => s.id === selectedId)) removeSig(selectedId);
               }}
               disabled={!selectedId}
               className="h-[52px] px-3 rounded-xl border bg-background text-destructive disabled:opacity-40 flex items-center justify-center"
-              aria-label="Διαγραφή"
+              aria-label="Διαγραφή επιλεγμένου"
             >
               <Trash2 className="h-5 w-5" />
             </button>
+
+            {/* Signature */}
             <button
-              onClick={exportPdf}
+              onClick={() => setSigSheet(true)}
+              className="h-[52px] px-3 rounded-xl border bg-background flex items-center justify-center gap-1.5"
+              aria-label="Υπογραφή"
+            >
+              <PenLine className="h-5 w-5" />
+              <span className="hidden sm:inline text-sm font-medium">Υπογραφή</span>
+            </button>
+
+            <div className="flex-1" />
+
+            {/* Export */}
+            <button
+              onClick={startExportFlow}
               disabled={phase === "exporting"}
-              className="h-[52px] px-4 rounded-xl bg-primary text-primary-foreground font-semibold flex items-center justify-center gap-1.5 disabled:opacity-60"
+              className="h-[52px] px-5 rounded-xl bg-primary text-primary-foreground font-semibold flex items-center justify-center gap-1.5 disabled:opacity-60"
             >
               {phase === "exporting" ? <Loader2 className="h-5 w-5 animate-spin" /> : <Download className="h-5 w-5" />}
-              <span className="hidden sm:inline">PDF</span>
+              <span>PDF</span>
             </button>
           </div>
         </div>
       )}
 
-      {/* Full-screen export overlay */}
+      {/* Crop dialog (before export) */}
+      <Dialog open={cropOpen} onOpenChange={(open) => { if (!open) onCropSkip(); }}>
+        <DialogContent
+          className="max-w-3xl"
+          onPointerDownCapture={cancelCropTimer}
+        >
+          <DialogHeader>
+            <DialogTitle>Κόψε το περιττό φόντο</DialogTitle>
+          </DialogHeader>
+          {bg && (
+            <CropPreview
+              dataUrl={bg.dataUrl}
+              onConfirm={onCropConfirm}
+              onSkip={onCropSkip}
+            />
+          )}
+          <p className="text-xs text-muted-foreground">Αν δεν κάνεις τίποτα, θα γίνει αυτόματη παράλειψη σε 3 δευτερόλεπτα.</p>
+        </DialogContent>
+      </Dialog>
+
+      {/* Export overlay */}
       {phase === "exporting" && (
         <div className="fixed inset-0 z-[60] bg-background/95 flex flex-col items-center justify-center gap-3">
           <Loader2 className="h-10 w-10 animate-spin text-primary" />
@@ -708,30 +655,6 @@ export function PdfEditor() {
           <div className="text-xs text-muted-foreground">Λίγα δευτερόλεπτα</div>
         </div>
       )}
-
-      {/* Quick inserts sheet */}
-      <Sheet open={quickSheet} onOpenChange={setQuickSheet}>
-        <SheetContent side="bottom" className="rounded-t-2xl">
-          <SheetHeader><SheetTitle>Στοιχεία μου</SheetTitle></SheetHeader>
-          <div className="mt-4 grid grid-cols-2 gap-2">
-            {quickItems.map((it) => (
-              <button
-                key={it.label}
-                onClick={() => insertQuick(it.label, it.value)}
-                className="text-left rounded-lg border bg-card hover:bg-accent active:bg-accent/80 px-3 py-3"
-              >
-                <div className="text-xs text-muted-foreground">{it.label}</div>
-                <div className="text-sm font-medium truncate">
-                  {it.label === "Ημερομηνία" ? todayGr() : (it.value || "Συμπλήρωσε…")}
-                </div>
-              </button>
-            ))}
-          </div>
-          {chips.length === 0 && (
-            <p className="mt-3 text-xs text-muted-foreground">Σύνδεση & συμπλήρωση προφίλ για αυτόματα στοιχεία.</p>
-          )}
-        </SheetContent>
-      </Sheet>
 
       {/* Signature sheet */}
       <Sheet open={sigSheet} onOpenChange={setSigSheet}>
@@ -743,7 +666,7 @@ export function PdfEditor() {
         </SheetContent>
       </Sheet>
 
-      <UpgradeModal open={upgradeOpen} onOpenChange={setUpgradeOpen} onResolved={exportPdf} />
+      <UpgradeModal open={upgradeOpen} onOpenChange={setUpgradeOpen} onResolved={() => bg && void doExport(bg)} />
     </>
   );
 }
