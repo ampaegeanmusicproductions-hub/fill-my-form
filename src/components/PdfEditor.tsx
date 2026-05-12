@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
+import { useBlocker } from "@tanstack/react-router";
 import * as fabric from "fabric";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { Loader2, Upload, FileText, Download, Type, Trash2, Undo2, Redo2, Crop, RotateCcw } from "lucide-react";
