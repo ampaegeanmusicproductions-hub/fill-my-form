@@ -132,6 +132,7 @@ export function PdfEditor() {
 
   const consume = useServerFn(consumeQuota);
   const save = useServerFn(saveDocument);
+  const detect = useServerFn(detectFields);
 
   // ── Fit-to-container scale ─────────────────────────────────────────────────
   useEffect(() => {
