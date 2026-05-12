@@ -1,135 +1,80 @@
+# Plan: HTML Recreation Editor
 
-# FormFill.gr — MVP Plan (v2)
+Νέα προσέγγιση που αντικαθιστά το overlay-on-canvas pipeline. Το Claude διαβάζει το έγγραφο και επιστρέφει **πλήρες HTML με inline CSS**, όπου τα κενά πεδία είναι ήδη `<input>`/`<textarea>`. Ο χρήστης γράφει κατευθείαν μέσα στο HTML και το εξάγουμε σε PDF με `html2pdf.js`.
 
-## Στόχος
-Ελληνική web app: ο χρήστης ανεβάζει **οποιοδήποτε** αρχείο εγγράφου, η AI εντοπίζει τα κενά πεδία, ο χρήστης τα συμπληρώνει on-screen, και κατεβάζει συμπληρωμένο PDF — χωρίς να αλλοιωθεί το πρωτότυπο.
+## ⚠️ Προειδοποίηση ασφαλείας (πρέπει να ξέρεις)
 
-## Tech Stack
-- **Frontend**: TanStack Start + React + Tailwind + shadcn/ui
-- **Backend**: Lovable Cloud (Auth + Postgres + Storage)
-- **AI**: Lovable AI Gateway, μοντέλο `google/gemini-2.5-pro` (vision) μέσω TanStack `createServerFn` — **χωρίς** δικό σου API key
-- **PDF render** (client): `pdfjs-dist`
-- **PDF write** (client): `pdf-lib`
+Το `VITE_ANTHROPIC_API_KEY` υπάρχει ήδη στο `.env` και είναι **εκτεθειμένο στο browser bundle**. Οποιοσδήποτε επισκέπτης του site μπορεί να το διαβάσει από το DevTools και να το χρησιμοποιήσει για δικά του Anthropic calls — με χρέωση στον δικό σου λογαριασμό. Είναι ΟΚ για prototype/demo αλλά **μη το δημοσιεύσεις** σε production χωρίς proxy. Αργότερα προτείνω να το γυρίσουμε πίσω στο Lovable AI Gateway server-side.
 
-## ⚠️ Σημαντικός περιορισμός runtime (πρέπει να ξέρεις)
-Ο server τρέχει σε **Cloudflare Workers** (όχι Node σε VM). Αυτό σημαίνει:
-- ❌ `sharp` δεν δουλεύει (native binary)
-- ❌ LibreOffice / `docx-to-pdf` headless δεν δουλεύει (απαιτεί subprocess)
-- ❌ HEIC decoding βιβλιοθήκες που χρειάζονται native code (libheif) δεν δουλεύουν
+Προχωράμε με την client-side προσέγγιση όπως ζήτησες.
 
-### Πρακτική λύση για κάθε format (όλα server-side εκτός HEIC)
-| Format | Αντιμετώπιση |
-|---|---|
-| **PDF** | Δουλεύει direct με `pdfjs-dist` (render) + `pdf-lib` (write) |
-| **JPG/PNG/WebP** | Embed σε νέο PDF μέσω `pdf-lib` (server fn). EXIF rotation: γίνεται client-side με `<canvas>` πριν το upload (απλό, χωρίς sharp) |
-| **DOCX** | Conversion μέσω εξωτερικού API (CloudConvert / ConvertAPI) που καλείται από το `createServerFn`. Χρειάζεται 1 API key (mock placeholder στο MVP, με toast «Word: σύντομα διαθέσιμο» μέχρι να βάλεις key) |
-| **DOC (legacy)** | Ίδιο μονοπάτι μέσω external API |
-| **HEIC/HEIF** | Conversion **client-side** με `heic2any` (WASM, δουλεύει στον browser). Ο χρήστης δεν βλέπει τίποτα — απλά ανεβαίνει σαν JPEG |
+## Τι αλλάζει
 
-> Το upload zone **παραμένει ένα**: «Σύρετε ή επιλέξτε αρχείο». Όλη η λογική κρύβεται από τον χρήστη. Αν λείπει το external API key, τα Word αρχεία δείχνουν φιλικό μήνυμα «Word conversion σύντομα — δοκίμασε PDF ή φωτογραφία προς το παρόν». Εικόνες & PDF δουλεύουν εξ αρχής.
+### 1. Νέα εξάρτηση
+- `bun add html2pdf.js`
 
-## Pricing Model
-| Tier | Τιμή | Όριο |
-|---|---|---|
-| Free | €0 | **1 έγγραφο lifetime** |
-| Pay-per-use | €1/έγγραφο | one-time, +1 credit |
-| Premium | €4.99/μήνα | unlimited |
+### 2. Νέο module `src/lib/recreate-html.ts` (client-side)
+- Function `recreateAsHtml(file: File): Promise<string>`
+- Βήματα:
+  1. Αν είναι PDF → render 1ης σελίδας σε canvas με `pdfjs-dist` → `toDataURL("image/jpeg", 0.85)` → base64
+  2. Αν είναι εικόνα → load σε `<img>` → canvas → base64
+  3. POST στο `https://api.anthropic.com/v1/messages` με τα headers που έδωσες (`x-api-key`, `anthropic-version`, `anthropic-dangerous-direct-browser-access: true`)
+  4. Model: `claude-opus-4-5-20251101`, `max_tokens: 4000`
+  5. Prompt: ο ελληνικός prompt που έδωσες (αναδημιούργησε ως HTML με inline CSS, κενά → inputs με `border-bottom: 2px solid #333`, table layout)
+  6. Επιστρέφει `response.content[0].text` καθαρισμένο από τυχόν ```` ```html ```` backticks
 
-**Mocked στο MVP (επιλογή β)**: τα κουμπιά «Αγορά €1» και «Premium €4.99» καλούν server functions που **πραγματικά** ενημερώνουν τη βάση (+1 credit ή `subscription_status='premium'`) ώστε να δοκιμάζεται το flow. Σε production απλά αντικαθίστανται με Stripe webhook.
+### 3. Refactor `src/components/PdfEditor.tsx`
+Αντικαθιστούμε όλο το tap/overlay/canvas pipeline με:
 
-## Database (Lovable Cloud)
+- **State:** `phase: "idle" | "uploading" | "recreating" | "ready"`, `html: string | null`, `error: string | null`
+- **Upload zone:** ίδιο dropzone, accept PDF + images
+- **On file selected:**
+  - `setPhase("recreating")`
+  - Loading UI: spinner + κείμενο "Αναδημιουργία εγγράφου…"
+  - `const html = await recreateAsHtml(file)`
+  - `setHtml(html); setPhase("ready")`
+- **Render:**
+  - Container `<div ref={previewRef} className="bg-white shadow rounded p-8 max-w-[800px] mx-auto" dangerouslySetInnerHTML={{ __html: html }} />`
+  - Χρησιμοποιούμε `div` αντί για iframe ώστε το `html2pdf.js` να βλέπει τα τρέχοντα input values κατευθείαν από το DOM (στο iframe χρειάζεται sandbox messaging).
+  - Sanitization: τρέχουμε το HTML μέσα από `DOMPurify` πριν το ενθέσουμε, με allowlist που περιλαμβάνει `input`, `textarea`, `style` attributes.
+- **Toolbar (πάνω από το preview):**
+  - Κουμπί "Νέο" → reset state
+  - Κουμπί "Εξαγωγή PDF" → καλεί `html2pdf().from(previewRef.current).set({...A4 opts}).save("document.pdf")`
+- **Error state:** αν το API αποτύχει ή επιστρέψει κενό HTML → εμφάνιση error message + κουμπί "Δοκίμασε ξανά"
 
-```sql
-profiles (
-  id uuid PK → auth.users,
-  email text,
-  full_name text,
-  subscription_status text default 'free',  -- 'free' | 'premium'
-  total_documents_used int default 0,        -- lifetime
-  pay_per_use_credits int default 0,
-  created_at timestamptz default now()
-)
+### 4. Αφαιρούνται από τον editor
+- Tap-to-place overlay logic
+- `detectFields` server function calls (κρατάμε το αρχείο για τώρα, δεν το διαγράφουμε)
+- Debug panel για raw AI response
+- Manual text/signature items (replaced by HTML inputs)
 
-documents (
-  id uuid PK,
-  user_id uuid → profiles,
-  name text,
-  original_file_path text,   -- Storage (το αρχικό upload, ό,τι format)
-  normalized_pdf_path text,  -- Storage (το PDF μετά τη μετατροπή)
-  filled_file_path text,     -- Storage (συμπληρωμένο)
-  fields_json jsonb,
-  created_at timestamptz default now()
-)
+### 5. PDF export config
+`html2pdf` options:
 ```
-- RLS: κάθε χρήστης βλέπει μόνο τα δικά του
-- Trigger: auto-create profile στο signup
+{ margin: 10, filename: "document.pdf",
+  image: { type: "jpeg", quality: 0.95 },
+  html2canvas: { scale: 2, useCORS: true },
+  jsPDF: { unit: "mm", format: "a4", orientation: "portrait" } }
+```
+Πριν το export, βεβαιωνόμαστε ότι τα `<input>` δείχνουν τα τρέχοντα τους `value` ως attribute (`html2canvas` ζωγραφίζει attributes, όχι DOM state) — θα κάνουμε ένα μικρό walk: `previewRef.current.querySelectorAll("input,textarea").forEach(el => el.setAttribute("value", el.value))` (για textareas χρειάζεται `el.textContent = el.value`).
 
-## Storage Buckets (private)
-- `originals` — ό,τι ανέβασε
-- `normalized` — το PDF μετά conversion
-- `filled` — το τελικό
+## Files affected
 
-## Server Functions (TanStack createServerFn)
+| Αρχείο | Δράση |
+|---|---|
+| `package.json` / `bun.lock` | + `html2pdf.js`, + `dompurify`, + `@types/dompurify` |
+| `src/lib/recreate-html.ts` | **νέο** — Claude API call + base64 helpers |
+| `src/components/PdfEditor.tsx` | **rewrite** — νέο HTML-based flow |
+| `src/lib/detect-fields.functions.ts` | μένει ως έχει (unused, για πιθανή μελλοντική χρήση) |
+| `.env` | ήδη έχει `VITE_ANTHROPIC_API_KEY` ✓ |
 
-1. **`normalizeUpload({ filePath, mimeType })`**
-   - PDF → pass-through
-   - Image (jpg/png/webp) → embed σε PDF με `pdf-lib`
-   - DOCX/DOC → external conversion API (αν λείπει key → throw user-friendly error)
-   - Επιστρέφει path του normalized PDF
-2. **`detectFields({ pdfPath })`**
-   - Render 1ης σελίδας → base64 image (μέσω `pdfjs-dist` σε worker)
-   - Στέλνει στο Lovable AI Gateway με prompt:
-     > «Είσαι ειδικός σε ελληνικά επίσημα έγγραφα. Εντόπισε ΚΑΘΕ κενό πεδίο. Επέστρεψε JSON: `[{label, x, y, width, height}]` σε pixels.»
-   - Επιστρέφει JSON
-3. **`consumeQuota()`**
-   - `premium` → ok
-   - `credits > 0` → credits--
-   - `total_documents_used < 1` → ++used
-   - Αλλιώς → throw `QUOTA_EXCEEDED`
-4. **`mockBuyCredit()`** → +1 credit (placeholder για Stripe)
-5. **`mockSubscribe()`** → `subscription_status = 'premium'` (placeholder)
+## Acceptance
 
-## Σελίδες (TanStack routes)
+1. Upload PDF/εικόνας → loading "Αναδημιουργία εγγράφου…" → εμφανίζεται HTML αντίγραφο με editable inputs στις θέσεις των κενών.
+2. Ο χρήστης πληκτρολογεί στα inputs χωρίς overlay misalignment.
+3. "Εξαγωγή PDF" κατεβάζει `document.pdf` με τα συμπληρωμένα κείμενα.
+4. "Νέο" καθαρίζει το state και επιστρέφει στο upload zone.
 
-1. **`/`** — Landing: hero, 3 βήματα, pricing teaser, FAQ
-2. **`/login`** + **`/signup`** — email/password
-3. **`/dashboard`** — λίστα + «Νέο Έγγραφο», δείκτης χρήσης
-4. **`/editor`** — upload zone (ένα, απλό) → loader («Επεξεργασία αρχείου…») → render PDF → AI → overlay inputs → «Εξαγωγή PDF»
-5. **`/pricing`** — 3 cards (mock κουμπιά)
-6. **`/account`** — status, credits, logout
+## Open questions πριν το build
 
-## Editor Flow
-
-1. User upload (drag/drop ή click)
-2. Client: αν HEIC → `heic2any` σε JPEG
-3. Upload στο `originals` bucket
-4. `normalizeUpload` → επιστρέφει normalized PDF path
-5. Client render με `pdfjs-dist` σε `<canvas>` (1η σελίδα, full-res)
-6. `detectFields` → coords array
-7. Overlay διαφανών `<input>` absolutely positioned πάνω από το canvas
-8. User πληκτρολογεί → values state
-9. «Εξαγωγή PDF»:
-   - `consumeQuota()` (block + upgrade modal αν εξαντλημένο)
-   - `pdf-lib` ανοίγει το normalized PDF, γράφει text overlay στις ίδιες coords
-   - Upload στο `filled` bucket, save record
-   - Download
-
-> **Ποτέ δεν αναπαράγεται** το έγγραφο — γράφουμε μόνο πάνω στο πρωτότυπο/normalized PDF.
-
-## Upgrade Modal (όταν `consumeQuota` αποτυγχάνει)
-Δύο κουμπιά:
-- «Αγορά για €1» → `mockBuyCredit` → toast «+1 credit (mock)» → ο χρήστης ξαναπατά Εξαγωγή
-- «Premium €4.99/μήνα» → `mockSubscribe` → toast «Premium ενεργό (mock)»
-
-## Design
-- Παλέτα: Mediterranean blue primary, cream backgrounds, gold accents
-- Font: `Manrope` (Greek support)
-- Mobile-first (375px)
-- Ελληνικά παντού (UI, errors, placeholders)
-
-## MVP Scope
-✅ Όλα τα παραπάνω
-❌ Multi-page (μόνο 1η σελίδα στο MVP), real Stripe, OCR templates, admin
-
-## Σημείωση εφαρμογής
-Όταν προστεθεί Stripe σε επόμενη φάση, αρκεί να αντικατασταθούν οι `mockBuyCredit` / `mockSubscribe` με webhook handlers σε `/api/public/stripe-webhook` — η υπόλοιπη logic (consumeQuota, credits, status) μένει ίδια.
+Καμία blocker. Αν συμφωνείς με την προσέγγιση + αποδέχεσαι το security trade-off του exposed key για prototype, πάτα **Implement plan**.
