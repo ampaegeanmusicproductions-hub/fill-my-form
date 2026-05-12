@@ -116,6 +116,7 @@ export function PdfEditor() {
   // Items
   const [items, setItems] = useState<TextItem[]>([]);
   const [sigs, setSigs] = useState<SigItem[]>([]);
+  const [aiFields, setAiFields] = useState<(DetectedField & { value: string })[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
