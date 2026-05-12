@@ -203,7 +203,7 @@ export function PdfEditor() {
       return;
     }
     setPhase("preparing");
-    setBg(null); setItems([]); setSigs([]); setAiFields([]); setEditingId(null); setSelectedId(null);
+    setBg(null); setItems([]); setSigs([]); setAiFields([]); setDebugRaw(null); setEditingId(null); setSelectedId(null);
     setOriginalFile(file);
     try {
       const out = await fileToImageData(file);
