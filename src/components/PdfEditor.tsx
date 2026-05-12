@@ -856,7 +856,7 @@ export function PdfEditor() {
               Σύνδεση & συμπλήρωση προφίλ για αυτόματα στοιχεία.
             </p>
           )}
-          <Button variant="outline" className="mt-4 w-full" onClick={() => { setQuickSheet(false); startTapMode(); }}>
+          <Button variant="outline" className="mt-4 w-full" onClick={() => { setQuickSheet(false); openTextAtCenter(); }}>
             <Plus className="h-4 w-4 mr-1" /> Άλλο πεδίο (κενό)
           </Button>
         </SheetContent>
