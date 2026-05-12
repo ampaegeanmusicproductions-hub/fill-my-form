@@ -109,11 +109,12 @@ export function PdfEditor() {
   const [upgradeOpen, setUpgradeOpen] = useState(false);
 
   // Mobile UI state
-  const [tapMode, setTapMode] = useState(false);
   const [textSheet, setTextSheet] = useState<{ open: boolean; value: string; pos: { x: number; y: number } | null; editing: fabric.IText | null }>({ open: false, value: "", pos: null, editing: null });
   const [quickSheet, setQuickSheet] = useState(false);
   const [sigSheet, setSigSheet] = useState(false);
   const [editSheet, setEditSheet] = useState<{ open: boolean; target: fabric.Object | null }>({ open: false, target: null });
+  const [selectedObj, setSelectedObj] = useState<fabric.Object | null>(null);
+  const [pinching, setPinching] = useState(false);
 
   const consume = useServerFn(consumeQuota);
   const save = useServerFn(saveDocument);
