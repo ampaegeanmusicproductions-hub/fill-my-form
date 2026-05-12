@@ -35,13 +35,12 @@ type = "text", "date", ή "multiline"
 
 export const detectFields = createServerFn({ method: "POST" })
   .inputValidator((input: { imageBase64: string; mimeType: string }) => input)
-  .handler(async ({ data }): Promise<{ fields: DetectedField[] }> => {
+  .handler(async ({ data }): Promise<{ fields: DetectedField[]; raw?: string; error?: string }> => {
     const apiKey = process.env.LOVABLE_API_KEY;
     console.log("[detectFields] LOVABLE_API_KEY exists:", !!apiKey);
 
     if (!apiKey) {
-      console.error("[detectFields] LOVABLE_API_KEY not set");
-      return { fields: [] };
+      return { fields: [], error: "LOVABLE_API_KEY not set" };
     }
 
     const dataUrl = `data:${data.mimeType};base64,${data.imageBase64}`;
@@ -73,7 +72,7 @@ export const detectFields = createServerFn({ method: "POST" })
       if (!resp.ok) {
         const errBody = await resp.text();
         console.error("[detectFields] gateway error:", resp.status, errBody);
-        return { fields: [] };
+        return { fields: [], raw: errBody, error: `Gateway HTTP ${resp.status}` };
       }
 
       const json = await resp.json() as {
@@ -89,15 +88,15 @@ export const detectFields = createServerFn({ method: "POST" })
       try {
         const parsed = JSON.parse(jsonStr);
         if (!parsed.fields || parsed.fields.length === 0) {
-          throw new Error("NO_FIELDS");
+          return { fields: [], raw: text, error: "NO_FIELDS" };
         }
-        return parsed as { fields: DetectedField[] };
+        return { fields: parsed.fields as DetectedField[], raw: text };
       } catch (e) {
         console.error("[detectFields] Parse error:", e, "Raw text:", text);
-        return { fields: [] };
+        return { fields: [], raw: text, error: `Parse error: ${e instanceof Error ? e.message : String(e)}` };
       }
     } catch (e) {
       console.error("[detectFields] failed:", e);
-      return { fields: [] };
+      return { fields: [], raw: text, error: e instanceof Error ? e.message : String(e) };
     }
   });
