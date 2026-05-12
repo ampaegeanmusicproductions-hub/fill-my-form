@@ -202,21 +202,40 @@ export function PdfEditor() {
       return;
     }
     setPhase("preparing");
-    setBg(null); setItems([]); setSigs([]); setEditingId(null); setSelectedId(null);
+    setBg(null); setItems([]); setSigs([]); setAiFields([]); setEditingId(null); setSelectedId(null);
     setOriginalFile(file);
     try {
       const out = await fileToImageData(file);
       setBg(out);
       setZoom(1.0);
+      setPhase("detecting");
+
+      // AI field detection (non-blocking failure → manual mode)
+      try {
+        const m = out.dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+        if (m) {
+          const result = await detect({ data: { imageBase64: m[2], mimeType: m[1] } });
+          const fields = (result?.fields ?? []) as DetectedField[];
+          if (fields.length > 0) {
+            setAiFields(fields.map(f => ({ ...f, value: "" })));
+            toast.success(`Εντοπίστηκαν ${fields.length} πεδία`);
+          } else {
+            toast.info("Δεν εντοπίστηκαν πεδία — πάτα οπουδήποτε για να γράψεις");
+          }
+        }
+      } catch (e) {
+        console.warn("[detect] failed:", e);
+        toast.info("Δεν εντοπίστηκαν πεδία — πάτα οπουδήποτε για να γράψεις");
+      }
       setPhase("ready");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Σφάλμα κατά τη φόρτωση.");
       setPhase("idle"); setOriginalFile(null);
     }
-  }, []);
+  }, [detect]);
 
   const reset = () => {
-    setBg(null); setItems([]); setSigs([]);
+    setBg(null); setItems([]); setSigs([]); setAiFields([]);
     setEditingId(null); setSelectedId(null);
     setOriginalFile(null); setPhase("idle");
     setZoom(1.0);
