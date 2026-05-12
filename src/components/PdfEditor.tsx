@@ -1,28 +1,36 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { useBlocker } from "@tanstack/react-router";
-import * as fabric from "fabric";
 import { PDFDocument, rgb } from "pdf-lib";
-import { Loader2, Upload, FileText, Download, Type, Trash2, Undo2, Redo2, Crop, RotateCcw, User, PenLine, Plus } from "lucide-react";
+import { Loader2, Upload, Download, Type, Trash2, Plus, Minus, X, User, PenLine } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Slider } from "@/components/ui/slider";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { useIsMobile } from "@/hooks/use-mobile";
 import { supabase } from "@/integrations/supabase/client";
 import { consumeQuota, saveDocument } from "@/lib/quota.functions";
 import { unwrapServerFn } from "@/lib/server-fn-client";
 import { UpgradeModal } from "@/components/UpgradeModal";
-import { CropPreview } from "@/components/CropPreview";
 import { SignaturePad } from "@/components/SignaturePad";
 
 type Phase = "idle" | "preparing" | "cropping" | "ready" | "exporting";
+type TextItem = {
+  id: string;
+  xPercent: number; // 0..1 (top-left of text box, in document coords)
+  yPercent: number;
+  text: string;
+  fontSize: number; // px relative to natural document width
+  color: string;
+};
+type SigItem = {
+  id: string;
+  xPercent: number;
+  yPercent: number;
+  widthPercent: number; // width relative to document width
+  dataUrl: string;
+};
 
 const ACCEPTED = ".pdf,.jpg,.jpeg,.png,.webp,.heic,.heif";
 const MAX_W = 1400;
-
 const QUICK_LABELS = ["Ονοματεπώνυμο", "ΑΦΜ", "ΑΔΤ", "Διεύθυνση", "Τηλέφωνο", "Ημερομηνία"] as const;
 
 function loadImage(src: string): Promise<HTMLImageElement> {
@@ -41,7 +49,6 @@ async function renderToImage(file: File): Promise<{ dataUrl: string; w: number; 
     const heic2any = (await import("heic2any")).default;
     working = (await heic2any({ blob: file, toType: "image/jpeg", quality: 0.9 })) as Blob;
   }
-
   if (lower.endsWith(".pdf") || file.type === "application/pdf") {
     const pdfjs = await import("pdfjs-dist");
     const workerUrl = (await import("pdfjs-dist/build/pdf.worker.min.mjs?url")).default;
@@ -59,7 +66,6 @@ async function renderToImage(file: File): Promise<{ dataUrl: string; w: number; 
     await page.render({ canvasContext: ctx, viewport: vp, canvas }).promise;
     return { dataUrl: canvas.toDataURL("image/jpeg", 0.92), w: canvas.width, h: canvas.height };
   }
-
   const url = URL.createObjectURL(working);
   try {
     const img = await loadImage(url);
@@ -75,46 +81,39 @@ async function renderToImage(file: File): Promise<{ dataUrl: string; w: number; 
 }
 
 const sanitize = (s: string) =>
-  s
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-zA-Z0-9._-]+/g, "_")
-    .replace(/_+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 80) || "file";
+  s.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "file";
 
 const todayGr = () => {
   const d = new Date();
   return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
 };
 
+const uid = () => Math.random().toString(36).slice(2, 10);
+
+const FONT_FAMILY = "Manrope, Arial, sans-serif";
+
 export function PdfEditor() {
-  const isMobile = useIsMobile();
   const inputRef = useRef<HTMLInputElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
-  const canvasElRef = useRef<HTMLCanvasElement>(null);
-  const fabricRef = useRef<fabric.Canvas | null>(null);
-  const historyRef = useRef<{ stack: string[]; idx: number; suspend: boolean }>({ stack: [], idx: -1, suspend: false });
-  const autoSaveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  
+  const editInputRef = useRef<HTMLInputElement>(null);
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [bg, setBg] = useState<{ dataUrl: string; w: number; h: number } | null>(null);
   const [originalBg, setOriginalBg] = useState<{ dataUrl: string; w: number; h: number } | null>(null);
   const [originalFile, setOriginalFile] = useState<File | null>(null);
   const [scale, setScale] = useState(1);
-  const [fontSize, setFontSize] = useState(20);
-  const [color, setColor] = useState("#000000");
-  const [removeTextBg, setRemoveTextBg] = useState(false);
-  const [upgradeOpen, setUpgradeOpen] = useState(false);
 
-  // Mobile UI state
-  const [textSheet, setTextSheet] = useState<{ open: boolean; value: string; pos: { x: number; y: number } | null; editing: fabric.IText | null }>({ open: false, value: "", pos: null, editing: null });
+  const [items, setItems] = useState<TextItem[]>([]);
+  const [sigs, setSigs] = useState<SigItem[]>([]);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [defaultFontSize, setDefaultFontSize] = useState(20);
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
   const [quickSheet, setQuickSheet] = useState(false);
   const [sigSheet, setSigSheet] = useState(false);
-  const [editSheet, setEditSheet] = useState<{ open: boolean; target: fabric.Object | null }>({ open: false, target: null });
-  const [selectedObj, setSelectedObj] = useState<fabric.Object | null>(null);
-  const [pinching, setPinching] = useState(false);
+  const [crop, setCrop] = useState({ top: 0, right: 0, bottom: 0, left: 0 });
 
   const consume = useServerFn(consumeQuota);
   const save = useServerFn(saveDocument);
@@ -129,33 +128,21 @@ export function PdfEditor() {
     enableBeforeUnload: () => phase !== "idle" && phase !== "exporting",
   });
 
-  // Profile chips (only when logged in)
+  // Profile chips (logged in)
   useEffect(() => {
     let cancelled = false;
     const loadProfileFor = async (userId: string) => {
       try {
-        const { data: profile, error } = await supabase
-          .from("profiles")
-          .select("*")
-          .eq("id", userId)
-          .maybeSingle();
+        const { data: profile, error } = await supabase.from("profiles").select("*").eq("id", userId).maybeSingle();
         if (error || !profile || cancelled) return;
         const prof = profile as unknown as Record<string, string | null>;
         const fullAddress = [prof.address_street, prof.address_number].filter(Boolean).join(" ").trim();
-        const fullCity = [prof.address_postal, prof.address_city].filter(Boolean).join(" ").trim();
         const items: { label: string; value: string }[] = [
           { label: "Ονοματεπώνυμο", value: prof.full_name ?? "" },
-          { label: "Πατρός", value: prof.father_name ?? "" },
-          { label: "Μητρός", value: prof.mother_name ?? "" },
           { label: "ΑΦΜ", value: prof.afm ?? "" },
-          { label: "ΑΜΚΑ", value: prof.amka ?? "" },
           { label: "ΑΔΤ", value: prof.id_number ?? "" },
           { label: "Τηλέφωνο", value: prof.phone ?? "" },
           { label: "Διεύθυνση", value: fullAddress },
-          { label: "Πόλη", value: fullCity },
-          { label: "Νομός", value: prof.address_region ?? "" },
-          { label: "Ημ. Γέννησης", value: prof.birth_date ?? "" },
-          { label: "Τόπος Γέννησης", value: prof.birth_place ?? "" },
         ].filter((c) => c.value.trim().length > 0);
         setChips(items);
       } catch { /* ignore */ }
@@ -163,7 +150,7 @@ export function PdfEditor() {
     supabase.auth.getSession().then(({ data }) => {
       if (cancelled) return;
       if (data.session?.user) loadProfileFor(data.session.user.id);
-    }).catch(() => { /* guest */ });
+    }).catch(() => {});
     const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
       if (cancelled) return;
       if (session?.user) loadProfileFor(session.user.id);
@@ -172,146 +159,42 @@ export function PdfEditor() {
     return () => { cancelled = true; sub.subscription.unsubscribe(); };
   }, []);
 
-  // Init / reinit fabric when bg changes
-  useEffect(() => {
-    if (!bg || !canvasElRef.current) return;
-    const c = new fabric.Canvas(canvasElRef.current, {
-      width: bg.w,
-      height: bg.h,
-      backgroundColor: "rgba(0,0,0,0)",
-      selection: true,
-      preserveObjectStacking: true,
-    });
-    fabricRef.current = c;
-
-    // Bigger touch targets on mobile + no resize/rotate handles on mobile
-    fabric.InteractiveFabricObject.ownDefaults = {
-      ...fabric.InteractiveFabricObject.ownDefaults,
-      cornerSize: isMobile ? 0 : 12,
-      touchCornerSize: isMobile ? 0 : 24,
-      transparentCorners: false,
-      cornerColor: "#1f4cff",
-      cornerStrokeColor: "#fff",
-      borderColor: "#1f4cff",
-      hasControls: !isMobile,
-    };
-
-    const pushHistory = () => {
-      const h = historyRef.current;
-      if (h.suspend) return;
-      const json = JSON.stringify(c.toJSON());
-      h.stack = h.stack.slice(0, h.idx + 1);
-      h.stack.push(json);
-      h.idx = h.stack.length - 1;
-      if (h.stack.length > 50) { h.stack.shift(); h.idx--; }
-    };
-    pushHistory();
-    c.on("object:added", pushHistory);
-    c.on("object:modified", pushHistory);
-    c.on("object:removed", pushHistory);
-
-    // Mobile: tap empty area → text sheet; tap object → selection (no auto edit sheet, use floating bar)
-    c.on("mouse:down", (opt) => {
-      if (!isMobile) return;
-      if (opt.target) return;
-      const o = opt as unknown as { absolutePointer?: { x: number; y: number }; pointer?: { x: number; y: number } };
-      const p = o.absolutePointer ?? o.pointer;
-      if (!p) return;
-      setTextSheet({ open: true, value: "", pos: { x: p.x, y: p.y }, editing: null });
-    });
-
-    // Track selection for floating action bar
-    const onSel = () => setSelectedObj(c.getActiveObject() ?? null);
-    const onClr = () => setSelectedObj(null);
-    c.on("selection:created", onSel);
-    c.on("selection:updated", onSel);
-    c.on("selection:cleared", onClr);
-
-    try {
-      const key = `autodilosi:draft:${bg.dataUrl.slice(-32)}`;
-      const draft = localStorage.getItem(key);
-      if (draft) {
-        historyRef.current.suspend = true;
-        c.loadFromJSON(JSON.parse(draft), () => {
-          c.renderAll();
-          historyRef.current.suspend = false;
-          pushHistory();
-        });
-      }
-    } catch {}
-
-    return () => {
-      c.dispose();
-      fabricRef.current = null;
-      historyRef.current = { stack: [], idx: -1, suspend: false };
-    };
-  }, [bg, isMobile]);
-
   // Responsive scale
   useEffect(() => {
     if (!bg) return;
     const update = () => {
       const w = wrapperRef.current?.clientWidth ?? bg.w;
-      const reserved = isMobile ? 200 : 240;
+      const reserved = 220;
       const maxH = Math.max(360, window.innerHeight - reserved);
       setScale(Math.min(1, w / bg.w, maxH / bg.h));
     };
     update();
     window.addEventListener("resize", update);
     return () => window.removeEventListener("resize", update);
-  }, [bg, isMobile]);
-
-  // Keyboard
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!fabricRef.current) return;
-      const target = e.target as HTMLElement | null;
-      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
-        e.preventDefault(); e.shiftKey ? redo() : undo();
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
-        e.preventDefault(); redo();
-      } else if (e.key === "Delete" || e.key === "Backspace") {
-        const obj = fabricRef.current.getActiveObject();
-        if (obj && !(obj as fabric.IText).isEditing) {
-          fabricRef.current.remove(obj);
-          fabricRef.current.discardActiveObject();
-          fabricRef.current.requestRenderAll();
-        }
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
-  // Auto-save
-  useEffect(() => {
-    if (!bg) return;
-    autoSaveTimerRef.current = setInterval(() => {
-      if (!fabricRef.current) return;
-      try {
-        const key = `autodilosi:draft:${bg.dataUrl.slice(-32)}`;
-        localStorage.setItem(key, JSON.stringify(fabricRef.current.toJSON()));
-      } catch {}
-    }, 30_000);
-    return () => { if (autoSaveTimerRef.current) clearInterval(autoSaveTimerRef.current); };
   }, [bg]);
 
-  const undo = () => {
-    const c = fabricRef.current; const h = historyRef.current;
-    if (!c || h.idx <= 0) return;
-    h.idx--; h.suspend = true;
-    c.loadFromJSON(JSON.parse(h.stack[h.idx]), () => { c.renderAll(); h.suspend = false; });
-  };
-  const redo = () => {
-    const c = fabricRef.current; const h = historyRef.current;
-    if (!c || h.idx >= h.stack.length - 1) return;
-    h.idx++; h.suspend = true;
-    c.loadFromJSON(JSON.parse(h.stack[h.idx]), () => { c.renderAll(); h.suspend = false; });
-  };
+  // Detect mobile keyboard via visualViewport (hide bottom toolbar when open)
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const onResize = () => {
+      const diff = window.innerHeight - vv.height;
+      setKeyboardOpen(diff > 150);
+    };
+    vv.addEventListener("resize", onResize);
+    return () => vv.removeEventListener("resize", onResize);
+  }, []);
+
+  // Focus the inline edit input when editing starts
+  useEffect(() => {
+    if (editingId && editInputRef.current) {
+      editInputRef.current.focus();
+      editInputRef.current.select();
+    }
+  }, [editingId]);
 
   const handleFile = useCallback(async (file: File) => {
-    setOriginalFile(file); setBg(null); setOriginalBg(null);
+    setOriginalFile(file); setBg(null); setOriginalBg(null); setItems([]); setSigs([]);
     const lower = file.name.toLowerCase();
     if (lower.endsWith(".docx") || lower.endsWith(".doc")) {
       toast.info("Word: σύντομα διαθέσιμο. Δοκίμασε PDF ή φωτογραφία προς το παρόν.");
@@ -323,7 +206,7 @@ export function PdfEditor() {
       const out = await renderToImage(file);
       setOriginalBg(out);
       if (isPdf) { setBg(out); setPhase("ready"); }
-      else { setPhase("cropping"); }
+      else { setCrop({ top: 0, right: 0, bottom: 0, left: 0 }); setPhase("cropping"); }
     } catch (e) {
       console.error(e);
       toast.error(e instanceof Error ? e.message : "Σφάλμα κατά τη φόρτωση.");
@@ -339,90 +222,114 @@ export function PdfEditor() {
     const f = e.dataTransfer.files?.[0]; if (f) void handleFile(f);
   };
 
-  const placeTextAt = (text: string, pos: { x: number; y: number } | null, size = fontSize) => {
-    const c = fabricRef.current; if (!c) return;
-    const x = pos?.x ?? c.getWidth() / 2;
-    const y = pos?.y ?? c.getHeight() / 2;
-    const t = new fabric.IText(text || "Γράψε εδώ", {
-      left: x, top: y, originX: "center", originY: "center",
-      fontSize: size, fill: color,
-      fontFamily: "Manrope, Arial, sans-serif",
-      editable: true,
-      backgroundColor: "rgba(255,255,255,0.95)",
-      padding: 4,
-      hasControls: !isMobile,
-      lockRotation: isMobile,
-      lockScalingX: isMobile,
-      lockScalingY: isMobile,
-    });
-    c.add(t); c.setActiveObject(t); c.requestRenderAll();
+  const applyCrop = async () => {
+    if (!originalBg) return;
+    const { top, right, bottom, left } = crop;
+    if (top + bottom + left + right === 0) {
+      setBg(originalBg); setPhase("ready"); return;
+    }
+    try {
+      const img = await loadImage(originalBg.dataUrl);
+      const w = Math.max(1, originalBg.w - left - right);
+      const h = Math.max(1, originalBg.h - top - bottom);
+      const c = document.createElement("canvas");
+      c.width = w; c.height = h;
+      c.getContext("2d")!.drawImage(img, left, top, w, h, 0, 0, w, h);
+      setBg({ dataUrl: c.toDataURL("image/jpeg", 0.92), w, h });
+      setPhase("ready");
+    } catch {
+      setBg(originalBg); setPhase("ready");
+    }
   };
 
-  const placeImageAt = async (dataUrl: string, pos: { x: number; y: number } | null, maxW = 220) => {
-    const c = fabricRef.current; if (!c) return;
-    const img = await loadImage(dataUrl);
-    const scaleF = Math.min(1, maxW / img.naturalWidth);
-    const fImg = new fabric.FabricImage(img, {
-      left: pos?.x ?? c.getWidth() / 2 - (img.naturalWidth * scaleF) / 2,
-      top: pos?.y ?? c.getHeight() / 2 - (img.naturalHeight * scaleF) / 2,
-      scaleX: scaleF, scaleY: scaleF,
-    });
-    c.add(fImg); c.setActiveObject(fImg); c.requestRenderAll();
+  // Place text at click position on overlay
+  const onOverlayPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (editingId) return; // currently editing → ignore
+    const target = e.target as HTMLElement;
+    if (target.closest("[data-text-item]") || target.closest("[data-sig-item]")) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width;
+    const y = (e.clientY - rect.top) / rect.height;
+    const id = uid();
+    const newItem: TextItem = {
+      id, xPercent: Math.max(0, Math.min(1, x)), yPercent: Math.max(0, Math.min(1, y)),
+      text: "", fontSize: defaultFontSize, color: "#000000",
+    };
+    setItems((prev) => [...prev, newItem]);
+    setSelectedId(id);
+    setEditingId(id);
   };
 
-  // Desktop chip insert (insert at caret if editing)
-  const insertChip = (value: string) => {
-    const c = fabricRef.current; if (!c) return;
-    const a = c.getActiveObject();
-    if (a && a.type === "i-text") {
-      const t = a as fabric.IText;
-      if (t.isEditing) {
-        const text = t.text ?? "";
-        const start = t.selectionStart ?? text.length;
-        const end = t.selectionEnd ?? start;
-        const next = text.slice(0, start) + value + text.slice(end);
-        t.set("text", next);
-        t.selectionStart = start + value.length;
-        t.selectionEnd = start + value.length;
-      } else { t.set("text", value); }
-      c.requestRenderAll();
-      c.fire("object:modified", { target: t });
+  const commitEdit = (id: string, text: string) => {
+    setItems((prev) => {
+      const next = prev.map((it) => (it.id === id ? { ...it, text } : it));
+      // remove if empty
+      return next.filter((it) => it.id !== id || it.text.trim().length > 0);
+    });
+    setEditingId(null);
+  };
+
+  const beginEdit = (id: string) => {
+    setSelectedId(id);
+    setEditingId(id);
+  };
+
+  const removeItem = (id: string) => {
+    setItems((prev) => prev.filter((it) => it.id !== id));
+    if (selectedId === id) setSelectedId(null);
+    if (editingId === id) setEditingId(null);
+  };
+  const removeSig = (id: string) => {
+    setSigs((prev) => prev.filter((s) => s.id !== id));
+    if (selectedId === id) setSelectedId(null);
+  };
+
+  const adjustSize = (delta: number) => {
+    if (!selectedId) {
+      setDefaultFontSize((s) => Math.max(8, Math.min(80, s + delta)));
       return;
     }
-    placeTextAt(value, null);
+    setItems((prev) => prev.map((it) => it.id === selectedId ? { ...it, fontSize: Math.max(8, Math.min(80, it.fontSize + delta)) } : it));
   };
 
-  const updateActive = (patch: Partial<{ fontSize: number; fill: string }>) => {
-    const c = fabricRef.current; if (!c) return;
-    const a = c.getActiveObject();
-    if (a && a.type === "i-text") {
-      a.set(patch); c.requestRenderAll();
-      c.fire("object:modified", { target: a });
-    }
+  // Long-press handling for delete shortcut
+  const longPressRef = useRef<{ id: string; timer: number } | null>(null);
+  const startLongPress = (id: string) => {
+    if (longPressRef.current) window.clearTimeout(longPressRef.current.timer);
+    const timer = window.setTimeout(() => {
+      setSelectedId(id);
+      // Triggering removal directly might be too aggressive; just select & user uses bottom Delete
+      // But user asked: long press → emit delete button. We'll just mark selected.
+    }, 500);
+    longPressRef.current = { id, timer };
+  };
+  const cancelLongPress = () => {
+    if (longPressRef.current) { window.clearTimeout(longPressRef.current.timer); longPressRef.current = null; }
   };
 
-  const deleteSelected = () => {
-    const c = fabricRef.current; if (!c) return;
-    const a = c.getActiveObject();
-    if (a) { c.remove(a); c.discardActiveObject(); c.requestRenderAll(); }
-  };
-
-  const openTextAtCenter = () => {
-    setTextSheet({ open: true, value: "", pos: null, editing: null });
-  };
-
-  const handleQuickInsert = (label: string, value: string) => {
+  const insertQuick = (label: string, value: string) => {
     setQuickSheet(false);
-    if (label === "Ημερομηνία" && !value) value = todayGr();
-    setTextSheet({ open: true, value, pos: null, editing: null });
+    const text = label === "Ημερομηνία" && !value ? todayGr() : value;
+    if (!text) return;
+    const id = uid();
+    setItems((prev) => [...prev, { id, xPercent: 0.1, yPercent: 0.1, text, fontSize: defaultFontSize, color: "#000000" }]);
+    setSelectedId(id);
   };
 
+  const addSignature = (dataUrl: string) => {
+    setSigSheet(false);
+    const id = uid();
+    setSigs((prev) => [...prev, { id, xPercent: 0.1, yPercent: 0.7, widthPercent: 0.3, dataUrl }]);
+    setSelectedId(id);
+  };
+
+  // Build composite image (bg + text + sigs) and embed in PDF
   const exportPdf = async () => {
-    if (!bg || !originalFile || !fabricRef.current) return;
+    if (!bg || !originalFile) return;
     setPhase("exporting");
     let step = "init";
     try {
-      step = "Έλεγχος ορίου χρήσης";
+      step = "Έλεγχος ορίου";
       const { data: authState } = await supabase.auth.getUser();
       const currentUser = authState.user;
       if (currentUser) {
@@ -436,34 +343,40 @@ export function PdfEditor() {
           throw e;
         }
       }
-      const c = fabricRef.current;
-      c.discardActiveObject();
-      step = "Προετοιμασία overlay κειμένου";
-      const textObjs = c.getObjects().filter((o) => o.type === "i-text") as fabric.IText[];
-      const savedBgs = textObjs.map((o) => o.backgroundColor);
-      if (removeTextBg) textObjs.forEach((o) => o.set({ backgroundColor: "" }));
-      c.requestRenderAll();
-      const overlay = c.toDataURL({ format: "png", multiplier: 1 });
-      if (removeTextBg) {
-        textObjs.forEach((o, i) => o.set({ backgroundColor: savedBgs[i] }));
-        c.requestRenderAll();
-      }
-      step = "Φόρτωση εικόνας υποβάθρου";
+
+      step = "Σύνθεση εικόνας";
       const baseImg = await loadImage(bg.dataUrl);
-      step = "Σύνθεση εικόνας + κειμένου";
       const out = document.createElement("canvas");
       out.width = bg.w; out.height = bg.h;
       const octx = out.getContext("2d");
-      if (!octx) throw new Error("Αδυναμία επεξεργασίας εικόνας (canvas 2D context).");
+      if (!octx) throw new Error("Αδυναμία επεξεργασίας εικόνας.");
       octx.fillStyle = "#ffffff";
       octx.fillRect(0, 0, bg.w, bg.h);
       octx.drawImage(baseImg, 0, 0, bg.w, bg.h);
-      const overlayImg = await loadImage(overlay);
-      octx.drawImage(overlayImg, 0, 0, bg.w, bg.h);
+
+      // Draw text items
+      octx.textBaseline = "top";
+      for (const it of items) {
+        const text = it.text.trim();
+        if (!text) continue;
+        octx.font = `${it.fontSize}px ${FONT_FAMILY}`;
+        octx.fillStyle = it.color;
+        octx.fillText(text, it.xPercent * bg.w, it.yPercent * bg.h);
+      }
+
+      // Draw signatures
+      for (const s of sigs) {
+        try {
+          const sigImg = await loadImage(s.dataUrl);
+          const w = s.widthPercent * bg.w;
+          const h = (sigImg.naturalHeight / sigImg.naturalWidth) * w;
+          octx.drawImage(sigImg, s.xPercent * bg.w, s.yPercent * bg.h, w, h);
+        } catch {}
+      }
+
+      step = "Δημιουργία PDF";
       const finalDataUrl = out.toDataURL("image/jpeg", 0.95);
-      step = "Μετατροπή εικόνας σε bytes";
       const finalBytes = await (await fetch(finalDataUrl)).arrayBuffer();
-      step = "Δημιουργία PDF (A4)";
       const A4 = { w: 595, h: 842 };
       const landscape = bg.w > bg.h;
       const pageW = landscape ? A4.h : A4.w;
@@ -479,17 +392,16 @@ export function PdfEditor() {
       const page = pdfDoc.addPage([pageW, pageH]);
       page.drawRectangle({ x: 0, y: 0, width: pageW, height: pageH, color: rgb(1, 1, 1) });
       page.drawImage(jpg, { x: px, y: py, width: drawW, height: drawH });
-      step = "Αποθήκευση PDF";
       const pdfBytes = await pdfDoc.save();
       const pdfBlob = new Blob([new Uint8Array(pdfBytes)], { type: "application/pdf" });
-      step = "Ανέβασμα στο cloud";
+
+      step = "Ανέβασμα";
       try {
-        const user = currentUser;
-        if (user) {
+        if (currentUser) {
           const ts = Date.now();
           const safeFull = sanitize(originalFile.name);
           const baseName = sanitize(originalFile.name.replace(/\.[^.]+$/, ""));
-          const folder = `${user.id}/${ts}_${baseName}`;
+          const folder = `${currentUser.id}/${ts}_${baseName}`;
           const originalPath = `${folder}/original_${safeFull}`;
           const filledPath = `${folder}/filled.pdf`;
           const normalizedPath = `${folder}/normalized.pdf`;
@@ -508,12 +420,13 @@ export function PdfEditor() {
             data: {
               name: baseName, originalFilePath: originalPath,
               normalizedPdfPath: normalizedPath, filledFilePath: filledPath,
-              fields: (c.toJSON().objects ?? []) as unknown[],
+              fields: [...items, ...sigs] as unknown[],
             },
           }));
         }
       } catch (e) { console.warn("[exportPdf] upload/save failed (non-blocking):", e); }
-      step = "Λήψη αρχείου";
+
+      step = "Λήψη";
       const url = URL.createObjectURL(pdfBlob);
       const a = document.createElement("a");
       a.href = url;
@@ -523,33 +436,53 @@ export function PdfEditor() {
       toast.success("Έτοιμο! Το αρχείο κατέβηκε.");
     } catch (e) {
       console.error(`[exportPdf] FAILED at step: ${step}`, e);
-      const reason =
-        e instanceof Error ? e.message :
-        e instanceof Response ? `HTTP ${e.status}` :
-        typeof e === "string" ? e : "άγνωστο σφάλμα";
+      const reason = e instanceof Error ? e.message : typeof e === "string" ? e : "άγνωστο σφάλμα";
       toast.error(`Σφάλμα στο βήμα “${step}”: ${reason}`);
     } finally { setPhase("ready"); }
   };
 
+  const quickItems = useMemo(() => {
+    const map = new Map(chips.map((c) => [c.label, c.value]));
+    return QUICK_LABELS.map((label) => ({ label, value: map.get(label) ?? "" }));
+  }, [chips]);
+
+  // ============= RENDER =============
   if (phase === "cropping" && originalBg) {
     return (
-      <CropPreview
-        dataUrl={originalBg.dataUrl}
-        onConfirm={(out) => { setBg(out); setPhase("ready"); }}
-        onSkip={() => { setBg(originalBg); setPhase("ready"); }}
-      />
+      <div className="space-y-4">
+        <div className="rounded-xl border bg-card p-3">
+          <p className="text-sm font-medium mb-1">Περικοπή (προαιρετικά)</p>
+          <p className="text-xs text-muted-foreground mb-3">Ορίσε πόσα pixel να αφαιρεθούν από κάθε πλευρά. Άφησε στο 0 για παράλειψη.</p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {(["top", "right", "bottom", "left"] as const).map((side) => (
+              <label key={side} className="flex flex-col gap-1">
+                <span className="text-xs text-muted-foreground">
+                  {side === "top" ? "Πάνω" : side === "right" ? "Δεξιά" : side === "bottom" ? "Κάτω" : "Αριστερά"}
+                </span>
+                <input
+                  type="number" min={0} value={crop[side]}
+                  onChange={(e) => setCrop((c) => ({ ...c, [side]: Math.max(0, Number(e.target.value) || 0) }))}
+                  className="h-10 rounded-md border px-3 text-sm"
+                />
+              </label>
+            ))}
+          </div>
+          <div className="flex gap-2 mt-3">
+            <Button variant="outline" onClick={() => { setBg(originalBg); setPhase("ready"); }}>Παράλειψη</Button>
+            <Button onClick={applyCrop}>Εφαρμογή & Συνέχεια</Button>
+          </div>
+        </div>
+        <img src={originalBg.dataUrl} alt="" className="mx-auto rounded-xl border max-w-full" />
+      </div>
     );
   }
 
   if (!bg) {
     return (
       <div
-        onDragOver={(e) => e.preventDefault()}
-        onDrop={onDrop}
+        onDragOver={(e) => e.preventDefault()} onDrop={onDrop}
         className="border-2 border-dashed rounded-2xl p-12 sm:p-20 text-center bg-card hover:border-primary transition cursor-pointer"
-        onClick={() => inputRef.current?.click()}
-        role="button"
-        tabIndex={0}
+        onClick={() => inputRef.current?.click()} role="button" tabIndex={0}
       >
         <input ref={inputRef} type="file" accept={ACCEPTED} className="hidden" onChange={onPickFile} />
         {phase === "preparing" ? (
@@ -564,7 +497,7 @@ export function PdfEditor() {
             </div>
             <div className="font-semibold text-lg">Σύρετε ή επιλέξτε αρχείο</div>
             <div className="text-sm text-muted-foreground max-w-md">
-              PDF, εικόνα ή φωτογραφία από κινητό. Πάτα οπουδήποτε για να γράψεις.
+              PDF, εικόνα ή φωτογραφία από κινητό. Πάτα οπουδήποτε στο έγγραφο για να γράψεις.
             </div>
           </div>
         )}
@@ -575,263 +508,206 @@ export function PdfEditor() {
   const displayW = bg.w * scale;
   const displayH = bg.h * scale;
 
-  // Quick chips list (logged-in profile values OR empty placeholders)
-  const profileMap = new Map(chips.map((c) => [c.label, c.value]));
-  const quickItems = QUICK_LABELS.map((label) => ({ label, value: profileMap.get(label) ?? "" }));
-
   return (
     <>
-      {/* Desktop toolbar */}
-      {!isMobile && (
-        <div className="flex flex-wrap items-center gap-2 mb-3 p-2 rounded-xl border bg-card">
-          <Button size="sm" onClick={() => placeTextAt("Γράψε εδώ", null)}>
-            <Type className="h-4 w-4 mr-1" /> Προσθήκη κειμένου
-          </Button>
-          {chips.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1 max-w-full">
-              <span className="text-xs text-muted-foreground pl-1">Γρήγορη συμπλήρωση:</span>
-              {chips.map((ch) => (
-                <button
-                  key={ch.label}
-                  type="button"
-                  onClick={() => insertChip(ch.value)}
-                  title={ch.value}
-                  className="inline-flex items-center rounded-full border bg-secondary/60 hover:bg-secondary text-secondary-foreground px-2 py-0.5 text-xs transition-colors"
-                >
-                  {ch.label}
-                </button>
-              ))}
-            </div>
-          )}
-          <div className="flex items-center gap-2 px-2">
-            <span className="text-xs text-muted-foreground w-10">{fontSize}px</span>
-            <Slider
-              value={[fontSize]} min={10} max={48} step={1}
-              onValueChange={(v) => { setFontSize(v[0]); updateActive({ fontSize: v[0] }); }}
-              className="w-32"
-            />
-          </div>
-          <input
-            type="color" value={color}
-            onChange={(e) => { setColor(e.target.value); updateActive({ fill: e.target.value }); }}
-            className="h-8 w-10 rounded border cursor-pointer" title="Χρώμα"
-          />
-          <Button size="sm" variant="outline" onClick={undo}><Undo2 className="h-4 w-4" /></Button>
-          <Button size="sm" variant="outline" onClick={redo}><Redo2 className="h-4 w-4" /></Button>
-          <Button size="sm" variant="outline" onClick={deleteSelected}>
-            <Trash2 className="h-4 w-4 mr-1" /> Διαγραφή
-          </Button>
-          {originalBg && (
-            <Button size="sm" variant="outline" onClick={() => setPhase("cropping")}>
-              <Crop className="h-4 w-4 mr-1" /> Περικοπή
-            </Button>
-          )}
-          {originalBg && bg && originalBg.dataUrl !== bg.dataUrl && (
-            <Button size="sm" variant="outline" onClick={() => setBg(originalBg)}>
-              <RotateCcw className="h-4 w-4 mr-1" /> Επαναφορά
-            </Button>
-          )}
-          <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer pl-2">
-            <Checkbox checked={removeTextBg} onCheckedChange={(v) => setRemoveTextBg(v === true)} />
-            Χωρίς λευκό background
-          </label>
-          <div className="flex-1" />
-          <div className="flex items-center gap-1 text-xs text-muted-foreground">
-            <FileText className="h-3.5 w-3.5" /> {originalFile?.name}
-          </div>
-          <Button size="sm" variant="outline" onClick={() => {
-            setBg(null); setOriginalBg(null); setOriginalFile(null); setPhase("idle");
-          }}>Νέο αρχείο</Button>
-          <Button size="sm" onClick={exportPdf} disabled={phase === "exporting"}>
-            {phase === "exporting" ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Download className="h-4 w-4 mr-1" />}
-            Εξαγωγή PDF
-          </Button>
-        </div>
-      )}
-
-      <div
-        ref={wrapperRef}
-        className="relative mx-auto rounded-xl border bg-card shadow-sm overflow-hidden"
-        style={{ width: "100%", maxWidth: bg.w, paddingBottom: isMobile ? 24 : 0 }}
-        onTouchStart={(e) => {
-          if (!isMobile) return;
-          if (e.touches.length >= 2) {
-            setPinching(true);
-            const c = fabricRef.current;
-            if (c) { c.selection = false; c.discardActiveObject(); c.requestRenderAll(); }
-          }
-        }}
-        onTouchEnd={(e) => {
-          if (!isMobile) return;
-          if (e.touches.length < 2 && pinching) {
-            setPinching(false);
-            const c = fabricRef.current;
-            if (c) c.selection = true;
-          }
-        }}
-      >
+      <div ref={wrapperRef} className="relative mx-auto" style={{ width: "100%", maxWidth: bg.w, paddingBottom: 96 }}>
         <div
-          className="relative mx-auto"
-          style={{ width: displayW, height: displayH, cursor: isMobile ? "crosshair" : "default" }}
+          className="relative mx-auto rounded-xl border bg-white shadow-sm overflow-hidden select-none"
+          style={{ width: displayW, height: displayH }}
         >
-          <img
-            src={bg.dataUrl} alt="Έγγραφο"
-            className="absolute inset-0 pointer-events-none select-none"
-            style={{ width: displayW, height: displayH }}
-          />
+          <img src={bg.dataUrl} alt="Έγγραφο" draggable={false} className="absolute inset-0 pointer-events-none" style={{ width: displayW, height: displayH }} />
+
+          {/* Tap overlay */}
           <div
-            style={{
-              width: bg.w, height: bg.h,
-              transform: `scale(${scale})`, transformOrigin: "top left",
-              position: "absolute", top: 0, left: 0,
-            }}
+            className="absolute inset-0"
+            style={{ touchAction: "manipulation" }}
+            onPointerDown={onOverlayPointerDown}
           >
-            <canvas ref={canvasElRef} />
+            {items.map((it) => {
+              const isEditing = editingId === it.id;
+              const isSelected = selectedId === it.id;
+              const left = it.xPercent * displayW;
+              const top = it.yPercent * displayH;
+              const fontPx = it.fontSize * scale;
+              return (
+                <div
+                  key={it.id}
+                  data-text-item
+                  className={`absolute ${isSelected && !isEditing ? "ring-2 ring-primary ring-offset-1" : ""}`}
+                  style={{ left, top, fontSize: fontPx, fontFamily: FONT_FAMILY, color: it.color, lineHeight: 1.1 }}
+                  onPointerDown={(e) => { e.stopPropagation(); startLongPress(it.id); setSelectedId(it.id); }}
+                  onPointerUp={(e) => { e.stopPropagation(); cancelLongPress(); if (!isEditing) beginEdit(it.id); }}
+                  onPointerCancel={cancelLongPress}
+                  onPointerLeave={cancelLongPress}
+                >
+                  {isEditing ? (
+                    <input
+                      ref={editInputRef}
+                      type="text"
+                      value={it.text}
+                      onChange={(e) => setItems((prev) => prev.map((p) => p.id === it.id ? { ...p, text: e.target.value } : p))}
+                      onBlur={(e) => commitEdit(it.id, e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLInputElement).blur(); }
+                        if (e.key === "Escape") { (e.target as HTMLInputElement).blur(); }
+                      }}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => e.stopPropagation()}
+                      style={{
+                        fontSize: fontPx, fontFamily: FONT_FAMILY, color: it.color,
+                        background: "rgba(255,255,255,0.95)", border: "1px solid hsl(var(--primary))",
+                        outline: "none", padding: "2px 6px", borderRadius: 4, minWidth: 80,
+                        lineHeight: 1.1,
+                      }}
+                    />
+                  ) : (
+                    <span style={{ background: "rgba(255,255,255,0.6)", padding: "0 2px", whiteSpace: "pre" }}>
+                      {it.text || " "}
+                    </span>
+                  )}
+                  {isSelected && !isEditing && (
+                    <button
+                      onPointerDown={(e) => { e.stopPropagation(); }}
+                      onClick={(e) => { e.stopPropagation(); removeItem(it.id); }}
+                      className="absolute -top-3 -right-3 h-7 w-7 rounded-full bg-destructive text-destructive-foreground shadow-md flex items-center justify-center"
+                      aria-label="Διαγραφή"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+
+            {sigs.map((s) => {
+              const isSelected = selectedId === s.id;
+              const left = s.xPercent * displayW;
+              const top = s.yPercent * displayH;
+              const w = s.widthPercent * displayW;
+              return (
+                <div
+                  key={s.id} data-sig-item
+                  className={`absolute ${isSelected ? "ring-2 ring-primary ring-offset-1" : ""}`}
+                  style={{ left, top, width: w }}
+                  onPointerDown={(e) => { e.stopPropagation(); setSelectedId(s.id); }}
+                >
+                  <img src={s.dataUrl} alt="" draggable={false} style={{ width: "100%", display: "block" }} />
+                  {isSelected && (
+                    <button
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => { e.stopPropagation(); removeSig(s.id); }}
+                      className="absolute -top-3 -right-3 h-7 w-7 rounded-full bg-destructive text-destructive-foreground shadow-md flex items-center justify-center"
+                      aria-label="Διαγραφή"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
+
+        {/* Hint */}
+        {items.length === 0 && sigs.length === 0 && (
+          <div className="mt-3 text-center text-xs text-muted-foreground">
+            Πάτα οπουδήποτε στο έγγραφο για να γράψεις.
+          </div>
+        )}
+
+        {/* Profile chips (desktop helper) */}
+        {chips.length > 0 && (
+          <div className="mt-3 flex flex-wrap items-center gap-1">
+            <span className="text-xs text-muted-foreground">Γρήγορη συμπλήρωση:</span>
+            {chips.map((ch) => (
+              <button
+                key={ch.label} type="button"
+                onClick={() => insertQuick(ch.label, ch.value)}
+                className="inline-flex items-center rounded-full border bg-secondary/60 hover:bg-secondary text-secondary-foreground px-2.5 py-1 text-xs"
+              >
+                {ch.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* Mobile floating UI */}
-      {isMobile && (
-        <>
-          {/* Hint pill (only when nothing yet) */}
-          {fabricRef.current && fabricRef.current.getObjects().length === 0 && !textSheet.open && (
-            <div className="fixed top-20 left-1/2 -translate-x-1/2 z-40 rounded-full bg-foreground/85 text-background text-xs px-3 py-1.5 shadow-md pointer-events-none">
-              Πάτα στο σημείο που θες να γράψεις
-            </div>
-          )}
-
-          {/* Floating selection action bar */}
-          {selectedObj && !pinching && (
-            <div className="fixed left-1/2 -translate-x-1/2 z-50 flex items-center gap-1 rounded-full border bg-card shadow-xl px-1.5 py-1.5"
-              style={{ bottom: "calc(160px + env(safe-area-inset-bottom))" }}
+      {/* Sticky bottom toolbar */}
+      {!keyboardOpen && (
+        <div
+          className="fixed left-0 right-0 z-40 border-t bg-card shadow-[0_-4px_12px_rgba(0,0,0,0.06)]"
+          style={{ bottom: 0, paddingBottom: "env(safe-area-inset-bottom)" }}
+        >
+          <div className="mx-auto max-w-3xl px-3 py-2 flex items-center gap-2">
+            <button
+              onClick={() => {
+                // Add a centered text and immediately edit
+                const id = uid();
+                setItems((prev) => [...prev, { id, xPercent: 0.1, yPercent: 0.1, text: "", fontSize: defaultFontSize, color: "#000000" }]);
+                setSelectedId(id); setEditingId(id);
+              }}
+              className="flex-1 min-w-0 h-[52px] rounded-xl bg-primary text-primary-foreground font-semibold flex items-center justify-center gap-1.5"
             >
-              {selectedObj.type === "i-text" && (
-                <button
-                  onClick={() => {
-                    const t = selectedObj as fabric.IText;
-                    setTextSheet({ open: true, value: t.text ?? "", pos: null, editing: t });
-                    setFontSize(Math.round(t.fontSize ?? fontSize));
-                  }}
-                  className="h-10 px-3 rounded-full text-sm font-medium hover:bg-accent flex items-center gap-1.5"
-                >
-                  <Type className="h-4 w-4" /> Επεξεργασία
-                </button>
-              )}
-              <button
-                onClick={() => setEditSheet({ open: true, target: selectedObj })}
-                className="h-10 w-10 rounded-full hover:bg-accent flex items-center justify-center"
-                aria-label="Μέγεθος"
-              >
-                <span className="text-base font-semibold">A↕</span>
+              <Plus className="h-5 w-5" /> <span className="truncate">Κείμενο</span>
+            </button>
+            <button
+              onClick={() => setQuickSheet(true)}
+              className="h-[52px] px-3 rounded-xl border bg-background flex items-center justify-center"
+              aria-label="Στοιχεία"
+            >
+              <User className="h-5 w-5" />
+            </button>
+            <button
+              onClick={() => setSigSheet(true)}
+              className="h-[52px] px-3 rounded-xl border bg-background flex items-center justify-center"
+              aria-label="Υπογραφή"
+            >
+              <PenLine className="h-5 w-5" />
+            </button>
+            <div className="h-[52px] flex items-center rounded-xl border bg-background overflow-hidden">
+              <button onClick={() => adjustSize(-2)} className="h-full w-10 flex items-center justify-center" aria-label="Μικρότερο">
+                <Minus className="h-4 w-4" />
               </button>
-              <button
-                onClick={deleteSelected}
-                className="h-10 w-10 rounded-full hover:bg-destructive/10 text-destructive flex items-center justify-center"
-                aria-label="Διαγραφή"
-              >
-                <Trash2 className="h-4 w-4" />
+              <span className="px-1 text-xs tabular-nums">
+                {selectedId ? items.find((i) => i.id === selectedId)?.fontSize ?? defaultFontSize : defaultFontSize}
+              </span>
+              <button onClick={() => adjustSize(+2)} className="h-full w-10 flex items-center justify-center" aria-label="Μεγαλύτερο">
+                <Plus className="h-4 w-4" />
               </button>
             </div>
-          )}
-
-          {/* Floating Add Text FAB (bottom-left) */}
-          <button
-            onClick={openTextAtCenter}
-            className="fixed left-4 z-40 bg-primary text-primary-foreground rounded-full shadow-xl flex items-center gap-2 px-5 h-14 font-semibold"
-            style={{ bottom: "calc(20px + env(safe-area-inset-bottom))" }}
-          >
-            <Plus className="h-5 w-5" /> Κείμενο
-          </button>
-
-          {/* Floating "Στοιχεία μου" (bottom-left, above) */}
-          <button
-            onClick={() => setQuickSheet(true)}
-            className="fixed left-4 z-40 bg-card text-foreground border rounded-full shadow-md flex items-center gap-2 px-4 h-12 text-sm font-medium"
-            style={{ bottom: "calc(86px + env(safe-area-inset-bottom))" }}
-          >
-            <User className="h-4 w-4" /> Στοιχεία μου
-          </button>
-
-          {/* Signature small FAB */}
-          <button
-            onClick={() => setSigSheet(true)}
-            className="fixed left-4 z-40 bg-card text-foreground border rounded-full shadow-md flex items-center gap-2 px-4 h-12 text-sm font-medium"
-            style={{ bottom: "calc(146px + env(safe-area-inset-bottom))" }}
-          >
-            <PenLine className="h-4 w-4" /> Υπογραφή
-          </button>
-
-          {/* Undo top-right */}
-          <button
-            onClick={undo}
-            className="fixed right-4 top-20 z-40 h-11 w-11 rounded-full bg-card border shadow-md flex items-center justify-center"
-            aria-label="Αναίρεση"
-          >
-            <Undo2 className="h-5 w-5" />
-          </button>
-
-          {/* Floating Export CTA (bottom-right) */}
-          <button
-            onClick={exportPdf}
-            disabled={phase === "exporting"}
-            className="fixed right-4 z-40 bg-primary text-primary-foreground rounded-full shadow-xl flex items-center gap-2 px-5 h-14 font-semibold disabled:opacity-60"
-            style={{ bottom: "calc(20px + env(safe-area-inset-bottom))" }}
-          >
-            {phase === "exporting" ? <Loader2 className="h-5 w-5 animate-spin" /> : <Download className="h-5 w-5" />}
-            PDF
-          </button>
-
-          {/* Full-screen export overlay */}
-          {phase === "exporting" && (
-            <div className="fixed inset-0 z-[60] bg-background/95 flex flex-col items-center justify-center gap-3">
-              <Loader2 className="h-10 w-10 animate-spin text-primary" />
-              <div className="text-base font-semibold">Δημιουργία PDF…</div>
-              <div className="text-xs text-muted-foreground">Λίγα δευτερόλεπτα</div>
-            </div>
-          )}
-        </>
+            <button
+              onClick={() => {
+                if (selectedId) {
+                  if (items.find((i) => i.id === selectedId)) removeItem(selectedId);
+                  else if (sigs.find((s) => s.id === selectedId)) removeSig(selectedId);
+                }
+              }}
+              disabled={!selectedId}
+              className="h-[52px] px-3 rounded-xl border bg-background text-destructive disabled:opacity-40 flex items-center justify-center"
+              aria-label="Διαγραφή"
+            >
+              <Trash2 className="h-5 w-5" />
+            </button>
+            <button
+              onClick={exportPdf}
+              disabled={phase === "exporting"}
+              className="h-[52px] px-4 rounded-xl bg-primary text-primary-foreground font-semibold flex items-center justify-center gap-1.5 disabled:opacity-60"
+            >
+              {phase === "exporting" ? <Loader2 className="h-5 w-5 animate-spin" /> : <Download className="h-5 w-5" />}
+              <span className="hidden sm:inline">PDF</span>
+            </button>
+          </div>
+        </div>
       )}
 
-      {/* Text input bottom sheet */}
-      <Sheet open={textSheet.open} onOpenChange={(o) => setTextSheet((s) => ({ ...s, open: o }))}>
-        <SheetContent side="bottom" className="rounded-t-2xl">
-          <SheetHeader><SheetTitle>{textSheet.editing ? "Επεξεργασία κειμένου" : "Νέο κείμενο"}</SheetTitle></SheetHeader>
-          <div className="mt-4 flex flex-col gap-3">
-            <Input
-              autoFocus
-              value={textSheet.value}
-              onChange={(e) => setTextSheet((s) => ({ ...s, value: e.target.value }))}
-              placeholder="Γράψε εδώ…"
-              className="h-12 text-base"
-            />
-            <div className="flex items-center gap-3">
-              <span className="text-sm text-muted-foreground w-16">Μέγεθος</span>
-              <Slider value={[fontSize]} min={10} max={64} step={1} onValueChange={(v) => setFontSize(v[0])} className="flex-1" />
-              <span className="text-sm w-10 text-right">{fontSize}px</span>
-            </div>
-            <Button
-              size="lg"
-              className="h-12 text-base"
-              onClick={() => {
-                const v = textSheet.value.trim();
-                if (!v) { setTextSheet({ open: false, value: "", pos: null, editing: null }); return; }
-                if (textSheet.editing) {
-                  const t = textSheet.editing;
-                  t.set({ text: v, fontSize });
-                  fabricRef.current?.requestRenderAll();
-                  fabricRef.current?.fire("object:modified", { target: t });
-                } else {
-                  placeTextAt(v, textSheet.pos, fontSize);
-                }
-                setTextSheet({ open: false, value: "", pos: null, editing: null });
-              }}
-            >
-              Τοποθέτηση
-            </Button>
-          </div>
-        </SheetContent>
-      </Sheet>
+      {/* Full-screen export overlay */}
+      {phase === "exporting" && (
+        <div className="fixed inset-0 z-[60] bg-background/95 flex flex-col items-center justify-center gap-3">
+          <Loader2 className="h-10 w-10 animate-spin text-primary" />
+          <div className="text-base font-semibold">Δημιουργία PDF…</div>
+          <div className="text-xs text-muted-foreground">Λίγα δευτερόλεπτα</div>
+        </div>
+      )}
 
       {/* Quick inserts sheet */}
       <Sheet open={quickSheet} onOpenChange={setQuickSheet}>
@@ -841,7 +717,7 @@ export function PdfEditor() {
             {quickItems.map((it) => (
               <button
                 key={it.label}
-                onClick={() => handleQuickInsert(it.label, it.value)}
+                onClick={() => insertQuick(it.label, it.value)}
                 className="text-left rounded-lg border bg-card hover:bg-accent active:bg-accent/80 px-3 py-3"
               >
                 <div className="text-xs text-muted-foreground">{it.label}</div>
@@ -852,13 +728,8 @@ export function PdfEditor() {
             ))}
           </div>
           {chips.length === 0 && (
-            <p className="mt-3 text-xs text-muted-foreground">
-              Σύνδεση & συμπλήρωση προφίλ για αυτόματα στοιχεία.
-            </p>
+            <p className="mt-3 text-xs text-muted-foreground">Σύνδεση & συμπλήρωση προφίλ για αυτόματα στοιχεία.</p>
           )}
-          <Button variant="outline" className="mt-4 w-full" onClick={() => { setQuickSheet(false); openTextAtCenter(); }}>
-            <Plus className="h-4 w-4 mr-1" /> Άλλο πεδίο (κενό)
-          </Button>
         </SheetContent>
       </Sheet>
 
@@ -867,67 +738,7 @@ export function PdfEditor() {
         <SheetContent side="bottom" className="rounded-t-2xl">
           <SheetHeader><SheetTitle>Υπογραφή</SheetTitle></SheetHeader>
           <div className="mt-4">
-            <SignaturePad
-              onCancel={() => setSigSheet(false)}
-              onSave={async (dataUrl) => {
-                setSigSheet(false);
-                await placeImageAt(dataUrl, null, 240);
-              }}
-            />
-          </div>
-        </SheetContent>
-      </Sheet>
-
-      {/* Edit existing object sheet (mobile) */}
-      <Sheet open={editSheet.open} onOpenChange={(o) => setEditSheet((s) => ({ ...s, open: o }))}>
-        <SheetContent side="bottom" className="rounded-t-2xl">
-          <SheetHeader><SheetTitle>Επεξεργασία στοιχείου</SheetTitle></SheetHeader>
-          <div className="mt-4 flex flex-col gap-3">
-            {editSheet.target?.type === "i-text" && (
-              <>
-                <Button
-                  className="h-12 justify-start"
-                  variant="outline"
-                  onClick={() => {
-                    const t = editSheet.target as fabric.IText;
-                    setEditSheet({ open: false, target: null });
-                    setTextSheet({ open: true, value: t.text ?? "", pos: null, editing: t });
-                    setFontSize(Math.round((t.fontSize ?? fontSize)));
-                  }}
-                >
-                  <Type className="h-4 w-4 mr-2" /> Επεξεργασία κειμένου
-                </Button>
-                <div className="flex items-center gap-3 px-1">
-                  <span className="text-sm text-muted-foreground w-16">Μέγεθος</span>
-                  <Slider
-                    value={[Math.round((editSheet.target as fabric.IText).fontSize ?? fontSize)]}
-                    min={10} max={64} step={1}
-                    onValueChange={(v) => {
-                      const t = editSheet.target as fabric.IText;
-                      t.set({ fontSize: v[0] });
-                      fabricRef.current?.requestRenderAll();
-                    }}
-                    className="flex-1"
-                  />
-                </div>
-              </>
-            )}
-            <p className="text-xs text-muted-foreground">Σύρε το στοιχείο με το δάχτυλο για μετακίνηση.</p>
-            <Button
-              variant="destructive"
-              className="h-12"
-              onClick={() => {
-                const c = fabricRef.current;
-                if (c && editSheet.target) {
-                  c.remove(editSheet.target);
-                  c.discardActiveObject();
-                  c.requestRenderAll();
-                }
-                setEditSheet({ open: false, target: null });
-              }}
-            >
-              <Trash2 className="h-4 w-4 mr-2" /> Διαγραφή
-            </Button>
+            <SignaturePad onCancel={() => setSigSheet(false)} onSave={addSignature} />
           </div>
         </SheetContent>
       </Sheet>
@@ -936,4 +747,3 @@ export function PdfEditor() {
     </>
   );
 }
-
